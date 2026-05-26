@@ -5,7 +5,7 @@
 
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getSession } from '$lib/server/engine/state';
+import { getCharacter, getSession, addSession } from '$lib/server/engine/state';
 import { processAction } from '$lib/server/engine/director';
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -24,13 +24,28 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'Keep it under 500 characters, Hemingway.' }, { status: 400 });
 	}
 
-	// Verify player exists
-	const session = getSession(playerId);
-	if (!session) {
+	// Verify player exists — check world state, not just sessions
+	const character = getCharacter(playerId);
+	if (!character) {
 		return json({ error: 'Unknown player. Join the game first.' }, { status: 401 });
 	}
 
-	// Update session activity
+	if (!character.alive) {
+		return json({ error: `${character.name} is dead. The infiltrators won this round.` }, { status: 403 });
+	}
+
+	// Auto-restore session if character exists but session was lost (server restart)
+	let session = getSession(playerId);
+	if (!session) {
+		addSession({
+			playerId,
+			playerName: character.playerName,
+			characterId: playerId,
+			connectedAt: new Date().toISOString(),
+			lastAction: new Date().toISOString()
+		});
+		session = getSession(playerId)!;
+	}
 	session.lastAction = new Date().toISOString();
 
 	try {
