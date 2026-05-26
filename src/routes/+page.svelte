@@ -129,6 +129,18 @@
 		};
 	}
 
+	function logout() {
+		if (eventSource) eventSource.close();
+		eventSource = null;
+		localStorage.removeItem('infiltration_playerId');
+		playerId = null;
+		character = null;
+		messages = [];
+		playerName = '';
+		characterName = '';
+		phase = 'join';
+	}
+
 	async function refreshState() {
 		if (!playerId) return;
 		try {
@@ -415,6 +427,11 @@
 						{/each}
 					</ul>
 				</div>
+
+				<!-- Logout -->
+				<button class="logout-button" onclick={logout}>
+					NEW CHARACTER
+				</button>
 			</div>
 		{/if}
 	</aside>
@@ -949,6 +966,26 @@
 		font-size: 0.8rem;
 		color: var(--amber-dim);
 		padding: 0.15rem 0;
+	}
+
+	.logout-button {
+		width: 100%;
+		margin-top: 1rem;
+		padding: 0.5rem;
+		background: transparent;
+		border: 1px solid var(--red-dim);
+		color: var(--red-dim);
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		letter-spacing: 0.15em;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.logout-button:hover {
+		border-color: var(--red);
+		color: var(--red);
+		background: rgba(255, 51, 51, 0.1);
 	}
 
 	/* ── Terminal ───────────────────────────────────────── */
