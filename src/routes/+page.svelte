@@ -3,7 +3,8 @@
 	import { onMount } from 'svelte';
 
 	// ── State ──────────────────────────────────────────────
-	let phase = $state<'join' | 'play'>('join');
+	type Phase = 'name' | 'select' | 'create' | 'play';
+	let phase = $state<Phase>('name');
 	let playerId = $state<string | null>(null);
 	let character = $state<Character | null>(null);
 	let messages = $state<GameLogEntry[]>([]);
@@ -13,13 +14,20 @@
 	let eventSource: EventSource | null = null;
 	let logContainer: HTMLDivElement | undefined = $state();
 
-	// ── Character Creation ─────────────────────────────────
+	// ── Player Identity ────────────────────────────────────
 	let playerName = $state('');
+	let existingCharacters = $state<Array<{
+		id: string; name: string; class: string; level: number;
+		hp: number; maxHp: number; location: string; alive: boolean; active: boolean;
+		xp: number; wealth: number;
+	}>>([]);
+	let isLoadingCharacters = $state(false);
+
+	// ── Character Creation ─────────────────────────────────
 	let characterName = $state('');
 	let selectedClass = $state<string>('Strong Hero');
 	let joinError = $state('');
 	let isJoining = $state(false);
-	let abilityRolls = $state<Array<{rolls: number[], dropped: number, total: number}>>([]);
 
 	const heroClasses = [
 		{ name: 'Strong Hero', key: 'STR', desc: 'Melee combat, feats of strength. The bat-swinger.', emoji: '💪' },
@@ -31,9 +39,54 @@
 	];
 
 	// ── Actions ────────────────────────────────────────────
-	async function joinGame() {
-		if (!playerName.trim() || !characterName.trim()) {
-			joinError = 'Need both a player name and character name.';
+
+	async function enterName() {
+		if (!playerName.trim()) return;
+		localStorage.setItem('infiltration_playerName', playerName.trim());
+		await loadCharacters();
+	}
+
+	async function loadCharacters() {
+		isLoadingCharacters = true;
+		try {
+			const res = await fetch(`/api/characters?playerName=${encodeURIComponent(playerName.trim())}`);
+			const data = await res.json();
+			existingCharacters = data.characters ?? [];
+			phase = 'select';
+		} catch {
+			existingCharacters = [];
+			phase = 'select';
+		} finally {
+			isLoadingCharacters = false;
+		}
+	}
+
+	function selectCharacter(charId: string) {
+		playerId = charId;
+		localStorage.setItem('infiltration_playerId', charId);
+
+		// Fetch full character state and enter game
+		fetch(`/api/state?playerId=${charId}`)
+			.then(r => r.json())
+			.then(data => {
+				if (data.character) {
+					character = data.character;
+					phase = 'play';
+					connectStream();
+				}
+			});
+	}
+
+	function goToCreate() {
+		characterName = '';
+		selectedClass = 'Strong Hero';
+		joinError = '';
+		phase = 'create';
+	}
+
+	async function createCharacter() {
+		if (!characterName.trim()) {
+			joinError = 'Your character needs a name.';
 			return;
 		}
 
@@ -60,10 +113,9 @@
 
 			playerId = data.playerId;
 			character = data.character;
-			abilityRolls = data.abilityRolls;
 
-			// Store in localStorage for reconnection
 			localStorage.setItem('infiltration_playerId', data.playerId);
+			localStorage.setItem('infiltration_playerName', playerName.trim());
 
 			phase = 'play';
 			connectStream();
@@ -96,8 +148,6 @@
 					text: data.error || 'Action failed.'
 				});
 			}
-			// Entries come through SSE stream, but refresh character state
-			// so inventory/HP/location updates show immediately
 			await refreshState();
 		} catch (e) {
 			messages.push({
@@ -124,19 +174,18 @@
 		};
 
 		eventSource.onerror = () => {
-			// Auto-reconnect is built into EventSource
 			console.log('[stream] Connection interrupted, reconnecting...');
 		};
 	}
 
-	function logout() {
-		// Tell the server to deactivate immediately
+	function switchCharacter() {
+		// Deactivate current character
 		if (playerId) {
 			fetch('/api/logout', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ playerId })
-			}).catch(() => {}); // fire and forget
+			}).catch(() => {});
 		}
 		if (eventSource) eventSource.close();
 		eventSource = null;
@@ -144,9 +193,28 @@
 		playerId = null;
 		character = null;
 		messages = [];
+		// Keep playerName — go back to character select, not name entry
+		loadCharacters();
+	}
+
+	function fullLogout() {
+		if (playerId) {
+			fetch('/api/logout', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ playerId })
+			}).catch(() => {});
+		}
+		if (eventSource) eventSource.close();
+		eventSource = null;
+		localStorage.removeItem('infiltration_playerId');
+		localStorage.removeItem('infiltration_playerName');
+		playerId = null;
+		character = null;
+		messages = [];
 		playerName = '';
-		characterName = '';
-		phase = 'join';
+		existingCharacters = [];
+		phase = 'name';
 	}
 
 	async function refreshState() {
@@ -201,11 +269,16 @@
 
 	// ── Lifecycle ──────────────────────────────────────────
 	onMount(() => {
-		// Check for existing session
+		const savedName = localStorage.getItem('infiltration_playerName');
 		const savedId = localStorage.getItem('infiltration_playerId');
-		if (savedId) {
+
+		if (savedName) {
+			playerName = savedName;
+		}
+
+		if (savedId && savedName) {
+			// Try to reconnect to last character
 			playerId = savedId;
-			// Try to reconnect
 			fetch(`/api/state?playerId=${savedId}`)
 				.then(r => r.json())
 				.then(data => {
@@ -214,12 +287,20 @@
 						phase = 'play';
 						connectStream();
 					} else {
+						// Character gone — go to select screen
 						localStorage.removeItem('infiltration_playerId');
+						playerId = null;
+						loadCharacters();
 					}
 				})
 				.catch(() => {
 					localStorage.removeItem('infiltration_playerId');
+					playerId = null;
+					if (savedName) loadCharacters();
 				});
+		} else if (savedName) {
+			// Have a name but no active character — show select
+			loadCharacters();
 		}
 
 		return () => {
@@ -244,10 +325,10 @@
 </script>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- CHARACTER CREATION SCREEN                                  -->
+<!-- NAME ENTRY SCREEN                                          -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
-{#if phase === 'join'}
+{#if phase === 'name'}
 <div class="join-screen">
 	<div class="join-container">
 		<div class="title-block">
@@ -266,9 +347,101 @@
 					bind:value={playerName}
 					placeholder="Who are you, really?"
 					maxlength="30"
+					onkeydown={(e) => e.key === 'Enter' && enterName()}
 				/>
 			</div>
 
+			<button
+				class="join-button"
+				onclick={enterName}
+				disabled={!playerName.trim() || isLoadingCharacters}
+			>
+				{#if isLoadingCharacters}
+					<span class="loading-dots">CONNECTING</span>
+				{:else}
+					CONTINUE
+				{/if}
+			</button>
+		</div>
+
+		<div class="join-footer">
+			<p>One server. One world. Always running.</p>
+			<p class="footer-sub">d20 Modern SRD | Persistent multiplayer text adventure</p>
+		</div>
+	</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- CHARACTER SELECT SCREEN                                    -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+{:else if phase === 'select'}
+<div class="join-screen">
+	<div class="join-container">
+		<div class="title-block">
+			<h1 class="title">INFILTRATION</h1>
+			<p class="subtitle">Welcome back, {playerName}</p>
+			<div class="title-rule"></div>
+		</div>
+
+		<div class="join-form">
+			{#if existingCharacters.length > 0}
+				<div class="form-group">
+					<label>YOUR CHARACTERS</label>
+					<div class="char-select-list">
+						{#each existingCharacters as char}
+							<button
+								class="char-select-card"
+								class:dead={!char.alive}
+								onclick={() => char.alive && selectCharacter(char.id)}
+								disabled={!char.alive}
+							>
+								<div class="char-select-top">
+									<span class="char-select-name">{char.name}</span>
+									<span class="char-select-class">{char.class} L{char.level}</span>
+								</div>
+								<div class="char-select-bottom">
+									<span class="char-select-hp" class:hp-low={char.hp / char.maxHp < 0.3}>
+										HP {char.hp}/{char.maxHp}
+									</span>
+									<span class="char-select-loc">{char.location}</span>
+									{#if !char.alive}
+										<span class="char-select-dead">DEAD</span>
+									{/if}
+								</div>
+							</button>
+						{/each}
+					</div>
+				</div>
+			{:else}
+				<p class="no-chars">No characters yet. Time to make one.</p>
+			{/if}
+
+			<button class="join-button" onclick={goToCreate}>
+				CREATE NEW CHARACTER
+			</button>
+
+			<button class="switch-player-button" onclick={fullLogout}>
+				DIFFERENT PLAYER
+			</button>
+		</div>
+	</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- CHARACTER CREATION SCREEN                                  -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+{:else if phase === 'create'}
+<div class="join-screen">
+	<div class="join-container">
+		<div class="title-block">
+			<h1 class="title">INFILTRATION</h1>
+			<p class="subtitle">New character for {playerName}</p>
+			<div class="title-rule"></div>
+		</div>
+
+		<div class="join-form">
 			<div class="form-group">
 				<label for="characterName">CHARACTER NAME</label>
 				<input
@@ -304,7 +477,7 @@
 
 			<button
 				class="join-button"
-				onclick={joinGame}
+				onclick={createCharacter}
 				disabled={isJoining}
 			>
 				{#if isJoining}
@@ -313,11 +486,12 @@
 					ENTER MADISON
 				{/if}
 			</button>
-		</div>
 
-		<div class="join-footer">
-			<p>One server. One world. Always running.</p>
-			<p class="footer-sub">d20 Modern SRD | Persistent multiplayer text adventure</p>
+			{#if existingCharacters.length > 0}
+				<button class="switch-player-button" onclick={() => phase = 'select'}>
+					BACK TO CHARACTER SELECT
+				</button>
+			{/if}
 		</div>
 	</div>
 </div>
@@ -436,9 +610,9 @@
 					</ul>
 				</div>
 
-				<!-- Logout -->
-				<button class="logout-button" onclick={logout}>
-					NEW CHARACTER
+				<!-- Switch Character -->
+				<button class="logout-button" onclick={switchCharacter}>
+					SWITCH CHARACTER
 				</button>
 			</div>
 		{/if}
@@ -742,6 +916,107 @@
 	.footer-sub {
 		color: var(--gray-dark);
 		margin-top: 0.25rem;
+	}
+
+	/* ── Character Select ──────────────────────────────── */
+
+	.char-select-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.char-select-card {
+		width: 100%;
+		padding: 0.75rem 1rem;
+		background: var(--bg-input);
+		border: 1px solid var(--green-dark);
+		border-radius: 3px;
+		cursor: pointer;
+		transition: all 0.2s;
+		text-align: left;
+		font-family: var(--font-mono);
+		color: var(--green);
+	}
+
+	.char-select-card:hover:not(:disabled) {
+		border-color: var(--green);
+		background: rgba(0, 255, 65, 0.05);
+		box-shadow: 0 0 12px var(--green-glow);
+	}
+
+	.char-select-card.dead {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.char-select-top {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		margin-bottom: 0.25rem;
+	}
+
+	.char-select-name {
+		font-weight: 700;
+		font-size: 1rem;
+	}
+
+	.char-select-class {
+		font-size: 0.75rem;
+		color: var(--cyan-dim);
+		letter-spacing: 0.1em;
+	}
+
+	.char-select-bottom {
+		display: flex;
+		gap: 1rem;
+		font-size: 0.75rem;
+		color: var(--gray);
+	}
+
+	.char-select-hp {
+		color: var(--green-dim);
+	}
+
+	.char-select-hp.hp-low {
+		color: var(--red);
+	}
+
+	.char-select-loc {
+		color: var(--gray);
+	}
+
+	.char-select-dead {
+		color: var(--red);
+		font-weight: 700;
+		letter-spacing: 0.1em;
+	}
+
+	.no-chars {
+		text-align: center;
+		color: var(--gray);
+		font-style: italic;
+		padding: 1.5rem 0;
+	}
+
+	.switch-player-button {
+		width: 100%;
+		margin-top: 0.75rem;
+		padding: 0.6rem;
+		background: transparent;
+		border: 1px solid var(--gray-dark);
+		color: var(--gray);
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		letter-spacing: 0.15em;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.switch-player-button:hover {
+		border-color: var(--gray);
+		color: var(--white);
 	}
 
 	/* ═══════════════════════════════════════════════════════ */
