@@ -5,7 +5,7 @@
 
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getCharacter, getSession, addSession } from '$lib/server/engine/state';
+import { getCharacter, getSession, addSession, touchCharacter } from '$lib/server/engine/state';
 import { processAction } from '$lib/server/engine/director';
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -47,6 +47,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		session = getSession(playerId)!;
 	}
 	session.lastAction = new Date().toISOString();
+	touchCharacter(playerId);
 
 	try {
 		const entries = await processAction(playerId, action.trim());

@@ -5,7 +5,7 @@
 
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getState, getCharacter, getActivePlayerCount } from '$lib/server/engine/state';
+import { getState, getCharacter, getActivePlayerCount, touchCharacter } from '$lib/server/engine/state';
 
 export const GET: RequestHandler = async ({ url }) => {
 	const playerId = url.searchParams.get('playerId');
@@ -13,6 +13,11 @@ export const GET: RequestHandler = async ({ url }) => {
 
 	// Build a safe view of world state (no secret infiltrator flags, etc.)
 	const character = playerId ? getCharacter(playerId) : null;
+
+	// Touch activity — keeps character "online" while they have the page open
+	if (playerId && character) {
+		touchCharacter(playerId);
+	}
 
 	// Public location info (only discovered locations)
 	const locations = Object.fromEntries(

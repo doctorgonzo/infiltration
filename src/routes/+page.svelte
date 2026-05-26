@@ -130,6 +130,14 @@
 	}
 
 	function logout() {
+		// Tell the server to deactivate immediately
+		if (playerId) {
+			fetch('/api/logout', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ playerId })
+			}).catch(() => {}); // fire and forget
+		}
 		if (eventSource) eventSource.close();
 		eventSource = null;
 		localStorage.removeItem('infiltration_playerId');

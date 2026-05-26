@@ -113,8 +113,11 @@ export function getActivePlayerCount(): number {
 
 // ── Character Management ───────────────────────────────────
 
+const ACTIVE_TIMEOUT_MS = 60_000; // 1 minute
+
 export function addCharacter(character: Character): void {
 	const state = getState();
+	character.lastActive = new Date().toISOString();
 	state.players[character.id] = character;
 	saveState();
 }
@@ -131,7 +134,50 @@ export function updateCharacter(id: string, updates: Partial<Character>): void {
 	}
 }
 
+/**
+ * Mark a character as active (touch their lastActive timestamp)
+ */
+export function touchCharacter(id: string): void {
+	const state = getState();
+	if (state.players[id]) {
+		state.players[id].lastActive = new Date().toISOString();
+		saveState();
+	}
+}
+
+/**
+ * Mark a character as logged off immediately
+ */
+export function deactivateCharacter(id: string): void {
+	const state = getState();
+	if (state.players[id]) {
+		state.players[id].lastActive = undefined;
+		saveState();
+	}
+}
+
+/**
+ * Check if a character is considered "online"
+ */
+export function isCharacterActive(character: Character): boolean {
+	if (!character.lastActive) return false;
+	return (Date.now() - new Date(character.lastActive).getTime()) < ACTIVE_TIMEOUT_MS;
+}
+
+/**
+ * Get only ACTIVE players at a location (online within last 60s)
+ */
 export function getPlayersAtLocation(locationId: string): Character[] {
+	const state = getState();
+	return Object.values(state.players).filter(
+		(p) => p.location === locationId && p.alive && isCharacterActive(p)
+	);
+}
+
+/**
+ * Get ALL players at a location (including offline), for state endpoint
+ */
+export function getAllPlayersAtLocation(locationId: string): Character[] {
 	const state = getState();
 	return Object.values(state.players).filter(
 		(p) => p.location === locationId && p.alive

@@ -104,6 +104,7 @@ export interface Character {
 	wealth: number;           // dollars
 	notes: string[];          // character-specific notes/flags
 	alive: boolean;
+	lastActive?: string;      // ISO timestamp — characters fade after 60s of inactivity
 }
 
 // ── Location ───────────────────────────────────────────────

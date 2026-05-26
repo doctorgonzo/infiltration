@@ -6,7 +6,7 @@
 // Tool use keeps the game honest.
 // ═══════════════════════════════════════════════════════════
 
-import { getState, saveState, addLogEntry, getPlayersAtLocation } from './state';
+import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive } from './state';
 import * as dice from './dice';
 import { ITEMS } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState } from '$lib/types';
@@ -393,9 +393,9 @@ function executeTool(name: string, input: any, state: GameState): string {
 // ── Build the System Prompt ────────────────────────────────
 
 function formatPlayerList(state: GameState): string {
-	const alive = Object.values(state.players).filter(p => p.alive);
-	if (alive.length === 0) return 'None yet';
-	return alive.map(p => {
+	const active = Object.values(state.players).filter(p => p.alive && isCharacterActive(p));
+	if (active.length === 0) return 'None currently online';
+	return active.map(p => {
 		const locName = state.locations[p.location]?.name ?? 'unknown';
 		return p.name + ' [ID: ' + p.id + '] (' + p.class + ' L' + p.level + ') at ' + locName + ', HP ' + p.hp + '/' + p.maxHp;
 	}).join('; ');
@@ -518,9 +518,9 @@ NPCs here: ${loc.npcs.map(id => (state.npcs[id]?.name ?? id) + ' [' + id + ']').
 Enemies here: ${loc.enemies.map(id => state.enemies[id]).filter(e => e?.alive).map(e => e.name + ' [' + e.id + ']').join(', ') || 'none'}
 Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 
-	// Other players at same location
+	// Other ACTIVE players at same location
 	const otherPlayers = Object.values(state.players)
-		.filter(p => p.id !== playerId && p.location === character.location && p.alive)
+		.filter(p => p.id !== playerId && p.location === character.location && p.alive && isCharacterActive(p))
 		.map(p => `${p.name} [${p.id}] (${p.class})`)
 		.join(', ');
 
