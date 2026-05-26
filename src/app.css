@@ -1,0 +1,118 @@
+/* ═══════════════════════════════════════════════════════════
+   INFILTRATION — Global Styles
+   Terminal aesthetic. Green phosphor on black.
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+	--bg: #0a0a0a;
+	--bg-panel: #0d1117;
+	--bg-input: #111820;
+	--green: #00ff41;
+	--green-dim: #00cc33;
+	--green-dark: #004d19;
+	--green-glow: #00ff4180;
+	--amber: #ffb000;
+	--amber-dim: #cc8d00;
+	--red: #ff3333;
+	--red-dim: #cc2929;
+	--cyan: #00e5ff;
+	--cyan-dim: #00b8cc;
+	--white: #c9d1d9;
+	--gray: #6e7681;
+	--gray-dark: #30363d;
+	--yellow: #e3b341;
+
+	--font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+	--font-display: 'Orbitron', 'JetBrains Mono', monospace;
+
+	--scanline-opacity: 0.03;
+}
+
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+html, body {
+	height: 100%;
+	background: var(--bg);
+	color: var(--green);
+	font-family: var(--font-mono);
+	font-size: 14px;
+	line-height: 1.6;
+	overflow: hidden;
+}
+
+/* Scanline overlay */
+body::after {
+	content: '';
+	position: fixed;
+	inset: 0;
+	background: repeating-linear-gradient(
+		0deg,
+		transparent,
+		transparent 2px,
+		rgba(0, 0, 0, var(--scanline-opacity)) 2px,
+		rgba(0, 0, 0, var(--scanline-opacity)) 4px
+	);
+	pointer-events: none;
+	z-index: 9999;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+	width: 6px;
+}
+::-webkit-scrollbar-track {
+	background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+	background: var(--green-dark);
+	border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: var(--green-dim);
+}
+
+/* Selection */
+::selection {
+	background: var(--green-dark);
+	color: var(--green);
+}
+
+/* Keyframes */
+@keyframes blink {
+	0%, 50% { opacity: 1; }
+	51%, 100% { opacity: 0; }
+}
+
+@keyframes fadeIn {
+	from { opacity: 0; transform: translateY(4px); }
+	to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glitch {
+	0% { transform: translate(0); }
+	20% { transform: translate(-2px, 1px); }
+	40% { transform: translate(2px, -1px); }
+	60% { transform: translate(-1px, -1px); }
+	80% { transform: translate(1px, 1px); }
+	100% { transform: translate(0); }
+}
+
+@keyframes pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.5; }
+}
+
+@keyframes rollIn {
+	from {
+		opacity: 0;
+		transform: scale(0.8) rotate(-5deg);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1) rotate(0deg);
+	}
+}

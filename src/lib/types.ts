@@ -1,0 +1,218 @@
+// ═══════════════════════════════════════════════════════════
+// d20 Modern — Core Types
+// ═══════════════════════════════════════════════════════════
+
+// ── Ability Scores ─────────────────────────────────────────
+export type AbilityName = 'STR' | 'DEX' | 'CON' | 'INT' | 'WIS' | 'CHA';
+
+export interface AbilityScores {
+	STR: number;
+	DEX: number;
+	CON: number;
+	INT: number;
+	WIS: number;
+	CHA: number;
+}
+
+// ── Classes (d20 Modern) ───────────────────────────────────
+export type HeroClass =
+	| 'Strong Hero'
+	| 'Fast Hero'
+	| 'Tough Hero'
+	| 'Smart Hero'
+	| 'Dedicated Hero'
+	| 'Charismatic Hero';
+
+export const CLASS_KEY_ABILITY: Record<HeroClass, AbilityName> = {
+	'Strong Hero': 'STR',
+	'Fast Hero': 'DEX',
+	'Tough Hero': 'CON',
+	'Smart Hero': 'INT',
+	'Dedicated Hero': 'WIS',
+	'Charismatic Hero': 'CHA'
+};
+
+export const CLASS_HIT_DIE: Record<HeroClass, number> = {
+	'Strong Hero': 8,
+	'Fast Hero': 8,
+	'Tough Hero': 10,
+	'Smart Hero': 6,
+	'Dedicated Hero': 6,
+	'Charismatic Hero': 6
+};
+
+// ── Skills (d20 Modern subset) ─────────────────────────────
+export type Skill =
+	| 'Balance' | 'Bluff' | 'Climb' | 'Computer Use'
+	| 'Concentration' | 'Craft' | 'Demolitions' | 'Diplomacy'
+	| 'Disable Device' | 'Disguise' | 'Drive' | 'Escape Artist'
+	| 'Forgery' | 'Gamble' | 'Gather Information' | 'Handle Animal'
+	| 'Hide' | 'Intimidate' | 'Investigate' | 'Jump'
+	| 'Knowledge (Arcane)' | 'Knowledge (Current Events)' | 'Knowledge (Streetwise)' | 'Knowledge (Technology)'
+	| 'Listen' | 'Move Silently' | 'Navigate' | 'Perception'
+	| 'Perform' | 'Pilot' | 'Profession' | 'Repair'
+	| 'Research' | 'Search' | 'Sense Motive' | 'Sleight of Hand'
+	| 'Spot' | 'Survival' | 'Swim' | 'Treat Injury' | 'Tumble';
+
+// ── Items ──────────────────────────────────────────────────
+export interface Item {
+	id: string;
+	name: string;
+	description: string;
+	weight: number; // lbs
+	type: 'weapon' | 'armor' | 'gear' | 'consumable' | 'quest' | 'junk';
+	// Weapon stats
+	damage?: string;        // e.g. "1d6", "2d6"
+	damageType?: string;    // e.g. "ballistic", "bludgeoning", "slashing"
+	range?: number;         // feet, 0 = melee
+	critRange?: number;     // natural roll threshold, default 20
+	critMultiplier?: number; // default x2
+	// Armor stats
+	acBonus?: number;
+	maxDex?: number;
+	armorPenalty?: number;
+	// Consumable
+	uses?: number;
+	effect?: string;
+	// Misc
+	value?: number;         // in dollars
+	properties?: string[];  // special properties
+}
+
+// ── Character ──────────────────────────────────────────────
+export interface Character {
+	id: string;
+	name: string;
+	playerName: string;     // the human controlling this character
+	class: HeroClass;
+	level: number;
+	xp: number;
+	abilities: AbilityScores;
+	hp: number;
+	maxHp: number;
+	ac: number;
+	initiative: number;
+	speed: number;          // feet per round
+	skills: Partial<Record<Skill, number>>; // skill ranks
+	feats: string[];
+	inventory: Item[];
+	equippedWeapon?: string;  // item id
+	equippedArmor?: string;   // item id
+	conditions: string[];     // poisoned, prone, etc.
+	location: string;         // location id
+	actionPoints: number;     // d20 Modern action points
+	wealth: number;           // dollars
+	notes: string[];          // character-specific notes/flags
+	alive: boolean;
+}
+
+// ── Location ───────────────────────────────────────────────
+export interface Location {
+	id: string;
+	name: string;
+	description: string;
+	type: 'outdoor' | 'indoor' | 'dungeon' | 'underground';
+	connections: string[];    // location ids you can travel to
+	npcs: string[];           // npc ids present here
+	items: string[];          // item ids on the ground
+	enemies: string[];        // enemy ids present
+	flags: Record<string, boolean>; // location-specific state
+	discovered: boolean;
+	dangerLevel: number;      // 0-10
+}
+
+// ── NPC ────────────────────────────────────────────────────
+export interface NPC {
+	id: string;
+	name: string;
+	description: string;
+	location: string;
+	attitude: 'friendly' | 'neutral' | 'hostile' | 'suspicious';
+	dialogue: string[];       // conversation topics
+	isInfiltrator: boolean;   // body-snatched?
+	alive: boolean;
+	questGiver: boolean;
+	inventory: Item[];
+}
+
+// ── Enemy ──────────────────────────────────────────────────
+export interface Enemy {
+	id: string;
+	name: string;
+	description: string;
+	type: 'infiltrator' | 'drone' | 'construct' | 'boss' | 'swarm';
+	hp: number;
+	maxHp: number;
+	ac: number;
+	attackBonus: number;
+	damage: string;           // e.g. "1d8+3"
+	abilities: Partial<AbilityScores>;
+	skills: Partial<Record<Skill, number>>;
+	xpValue: number;
+	loot: string[];           // item ids
+	special: string[];        // special abilities
+	alive: boolean;
+}
+
+// ── Combat ─────────────────────────────────────────────────
+export interface CombatState {
+	active: boolean;
+	round: number;
+	initiativeOrder: Array<{ id: string; type: 'player' | 'enemy'; initiative: number }>;
+	currentTurn: number;      // index in initiative order
+	location: string;
+}
+
+// ── Quest ──────────────────────────────────────────────────
+export interface Quest {
+	id: string;
+	name: string;
+	description: string;
+	status: 'unknown' | 'active' | 'complete' | 'failed';
+	objectives: Array<{
+		description: string;
+		complete: boolean;
+	}>;
+	xpReward: number;
+	itemRewards: string[];
+	giver: string;            // npc id
+}
+
+// ── Game State (the whole persistent world) ────────────────
+export interface GameState {
+	worldTime: string;        // in-game time
+	dayNumber: number;
+	players: Record<string, Character>;   // keyed by player id
+	locations: Record<string, Location>;
+	npcs: Record<string, NPC>;
+	enemies: Record<string, Enemy>;
+	quests: Record<string, Quest>;
+	combat: CombatState;
+	globalFlags: Record<string, boolean>; // world-state flags
+	invasionLevel: number;    // 0-100, how far the invasion has progressed
+	gameLog: GameLogEntry[];  // recent events
+}
+
+export interface GameLogEntry {
+	timestamp: string;
+	type: 'narration' | 'action' | 'combat' | 'system' | 'dialogue' | 'roll';
+	actor?: string;           // who triggered this
+	text: string;
+	roll?: {
+		dice: string;
+		result: number;
+		modifier: number;
+		total: number;
+		success?: boolean;
+		dc?: number;
+	};
+}
+
+// ── Player Session ─────────────────────────────────────────
+export interface PlayerSession {
+	playerId: string;
+	playerName: string;
+	characterId: string | null; // null until character is created
+	connectedAt: string;
+	lastAction: string;
+}
