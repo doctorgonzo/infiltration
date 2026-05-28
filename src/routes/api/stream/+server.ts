@@ -9,6 +9,7 @@ import { subscribe, getRecentLog } from '$lib/server/engine/state';
 export const GET: RequestHandler = async ({ request, url }) => {
 	const encoder = new TextEncoder();
 	const skipHistory = url.searchParams.get('fresh') === '1';
+	const playerId = url.searchParams.get('playerId');
 
 	const stream = new ReadableStream({
 		start(controller) {
@@ -16,7 +17,8 @@ export const GET: RequestHandler = async ({ request, url }) => {
 			// Skip if this is a fresh character (no old log replay)
 			let replayCount = 0;
 			if (!skipHistory) {
-				const recent = getRecentLog(50);
+				const recent = getRecentLog(50)
+					.filter(entry => !entry.targetPlayer || entry.targetPlayer === playerId);
 				replayCount = recent.length;
 				for (const entry of recent) {
 					try {
@@ -28,8 +30,10 @@ export const GET: RequestHandler = async ({ request, url }) => {
 			// Send a connected event
 			controller.enqueue(encoder.encode(`event: connected\ndata: ${JSON.stringify({ timestamp: new Date().toISOString(), count: replayCount })}\n\n`));
 
-			// Subscribe to new log entries
+			// Subscribe to new log entries — filter by targetPlayer
 			const unsubscribe = subscribe((entry) => {
+				// If entry is targeted to a specific player, only send to that player
+				if (entry.targetPlayer && entry.targetPlayer !== playerId) return;
 				try {
 					controller.enqueue(encoder.encode(`data: ${JSON.stringify(entry)}\n\n`));
 				} catch {

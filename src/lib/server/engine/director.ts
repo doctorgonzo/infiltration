@@ -1706,10 +1706,13 @@ export async function processAction(
 	addLogEntry(actionEntry);
 
 	// Get recent context (last 20 log entries)
-	const recentLog = state.gameLog.slice(-20).map(e => {
-		if (e.actor) return `[${e.type}] ${e.actor}: ${e.text}`;
-		return `[${e.type}] ${e.text}`;
-	}).join('\n');
+	// Filter: include public entries (no targetPlayer) + this player's private entries only
+	const recentLog = state.gameLog.slice(-20)
+		.filter(e => !e.targetPlayer || e.targetPlayer === playerId)
+		.map(e => {
+			if (e.actor) return `[${e.type}] ${e.actor}: ${e.text}`;
+			return `[${e.type}] ${e.text}`;
+		}).join('\n');
 
 	// Character context — ID is critical for tool calls
 	const charContext = `
@@ -1864,7 +1867,8 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 						const entry: GameLogEntry = {
 							timestamp: new Date().toISOString(),
 							type: 'narration',
-							text: trimmed
+							text: trimmed,
+							targetPlayer: playerId
 						};
 						entries.push(entry);
 						addLogEntry(entry);
@@ -1911,6 +1915,7 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 							timestamp: new Date().toISOString(),
 							type: 'roll',
 							text: rollText,
+							targetPlayer: playerId,
 							roll: {
 								dice: toolBlock.input.expression ?? '1d20',
 								result: parsed.natural ?? parsed.roll ?? parsed.attackRoll ?? 0,

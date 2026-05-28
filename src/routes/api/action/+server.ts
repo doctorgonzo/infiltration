@@ -5,7 +5,7 @@
 
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getCharacter, getSession, addSession, touchCharacter } from '$lib/server/engine/state';
+import { getCharacter, getSession, addSession, touchCharacter, withPlayerLock } from '$lib/server/engine/state';
 import { processAction } from '$lib/server/engine/director';
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -50,7 +50,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	touchCharacter(playerId);
 
 	try {
-		const entries = await processAction(playerId, action.trim());
+		const entries = await withPlayerLock(playerId, () => processAction(playerId, action.trim()));
 
 		return json({
 			entries,

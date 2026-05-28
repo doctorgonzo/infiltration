@@ -458,11 +458,17 @@
 	function connectStream(fresh = false) {
 		if (eventSource) eventSource.close();
 
-		eventSource = new EventSource(`/api/stream${fresh ? '?fresh=1' : ''}`);
+		const params = new URLSearchParams();
+		if (fresh) params.set('fresh', '1');
+		if (playerId) params.set('playerId', playerId);
+		const qs = params.toString();
+		eventSource = new EventSource(`/api/stream${qs ? '?' + qs : ''}`);
 
 		eventSource.onmessage = (event) => {
 			try {
 				const entry: GameLogEntry = JSON.parse(event.data);
+				// Client-side safety filter: skip entries targeted to other players
+				if (entry.targetPlayer && entry.targetPlayer !== playerId) return;
 				messages.push(entry);
 				scrollToBottom();
 			} catch {}

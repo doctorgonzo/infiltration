@@ -14,7 +14,27 @@ const MAX_LOG_ENTRIES = 200; // Keep last 200 log entries in memory
 let _state: GameState | null = null;
 let _sessions: Map<string, PlayerSession> = new Map();
 let _listeners: Set<(entry: GameLogEntry) => void> = new Set();
-let _writeLock = false;
+let _writeQueue: Promise<void> = Promise.resolve();
+
+// ── Per-Player Action Serialization ───────────────────────
+// Chains promises per playerId so the same player's actions
+// run sequentially, but different players can act in parallel.
+const _playerLocks: Map<string, Promise<any>> = new Map();
+
+export async function withPlayerLock<T>(playerId: string, fn: () => Promise<T>): Promise<T> {
+	const prev = _playerLocks.get(playerId) ?? Promise.resolve();
+	const next = prev.then(fn, fn); // run fn regardless of prior rejection
+	_playerLocks.set(playerId, next);
+
+	try {
+		return await next;
+	} finally {
+		// Clean up the map entry if this was the last queued action
+		if (_playerLocks.get(playerId) === next) {
+			_playerLocks.delete(playerId);
+		}
+	}
+}
 
 /**
  * Load or initialize the game world
@@ -40,23 +60,22 @@ export function getState(): GameState {
 }
 
 /**
- * Save state to disk (debounced)
+ * Save state to disk (queued — no writes are lost)
  */
 export function saveState(): void {
-	if (!_state || _writeLock) return;
-	_writeLock = true;
+	if (!_state) return;
 
-	try {
-		// Trim log to prevent unbounded growth
-		if (_state.gameLog.length > MAX_LOG_ENTRIES) {
-			_state.gameLog = _state.gameLog.slice(-MAX_LOG_ENTRIES);
+	_writeQueue = _writeQueue.then(() => {
+		try {
+			// Trim log to prevent unbounded growth
+			if (_state!.gameLog.length > MAX_LOG_ENTRIES) {
+				_state!.gameLog = _state!.gameLog.slice(-MAX_LOG_ENTRIES);
+			}
+			writeFileSync(STATE_PATH, JSON.stringify(_state, null, 2));
+		} catch (e) {
+			console.error('[state] Failed to save:', e);
 		}
-		writeFileSync(STATE_PATH, JSON.stringify(_state, null, 2));
-	} catch (e) {
-		console.error('[state] Failed to save:', e);
-	} finally {
-		_writeLock = false;
-	}
+	});
 }
 
 /**

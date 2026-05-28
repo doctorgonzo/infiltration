@@ -235,6 +235,7 @@ export interface GameLogEntry {
 	timestamp: string;
 	type: 'narration' | 'action' | 'combat' | 'system' | 'dialogue' | 'roll';
 	actor?: string;           // who triggered this
+	targetPlayer?: string;    // if set, only this player sees the entry (private narration/rolls)
 	text: string;
 	roll?: {
 		dice: string;
