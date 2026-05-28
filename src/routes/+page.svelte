@@ -3,7 +3,7 @@
 	import { onMount } from 'svelte';
 
 	// ── State ──────────────────────────────────────────────
-	type Phase = 'name' | 'select' | 'create' | 'play';
+	type Phase = 'name' | 'select' | 'create' | 'play' | 'dead';
 	let phase = $state<Phase>('name');
 	let playerId = $state<string | null>(null);
 	let character = $state<Character | null>(null);
@@ -11,6 +11,8 @@
 	let input = $state('');
 	let isLoading = $state(false);
 	let sidebarOpen = $state(true);
+	let worldTime = $state<string>('');
+	let dayNumber = $state<number>(0);
 	let eventSource: EventSource | null = null;
 	let logContainer: HTMLDivElement | undefined = $state();
 
@@ -29,6 +31,239 @@
 	let joinError = $state('');
 	let isJoining = $state(false);
 
+	// ── Stat Rolling & Feat Selection ─────────────────────
+	type CreationStep = 'basics' | 'stats' | 'feats';
+	let creationStep = $state<CreationStep>('basics');
+	let useTemplate = $state(true); // true = auto-assign stats from class, false = 4d6 roll
+
+	type AbilityKey = 'STR' | 'DEX' | 'CON' | 'INT' | 'WIS' | 'CHA';
+	interface StatRoll {
+		rolls: number[];   // the 4 dice
+		dropped: number;   // which was dropped
+		total: number;     // sum of kept 3
+		locked: boolean;   // has been rolled
+	}
+	let rolledStats = $state<Record<AbilityKey, StatRoll>>({
+		STR: { rolls: [], dropped: 0, total: 0, locked: false },
+		DEX: { rolls: [], dropped: 0, total: 0, locked: false },
+		CON: { rolls: [], dropped: 0, total: 0, locked: false },
+		INT: { rolls: [], dropped: 0, total: 0, locked: false },
+		WIS: { rolls: [], dropped: 0, total: 0, locked: false },
+		CHA: { rolls: [], dropped: 0, total: 0, locked: false }
+	});
+
+	const ABILITY_LABELS: Record<AbilityKey, string> = {
+		STR: 'STRENGTH', DEX: 'DEXTERITY', CON: 'CONSTITUTION',
+		INT: 'INTELLIGENCE', WIS: 'WISDOM', CHA: 'CHARISMA'
+	};
+
+	function rollStat(key: AbilityKey) {
+		const dice = Array.from({ length: 4 }, () => Math.floor(Math.random() * 6) + 1);
+		dice.sort((a, b) => b - a);
+		rolledStats[key] = {
+			rolls: [...dice],
+			dropped: dice[3],
+			total: dice[0] + dice[1] + dice[2],
+			locked: true
+		};
+	}
+
+	function rollAllStats() {
+		const keys: AbilityKey[] = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA'];
+		for (const key of keys) {
+			if (!rolledStats[key].locked) rollStat(key);
+		}
+	}
+
+	function rerollAllStats() {
+		const keys: AbilityKey[] = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA'];
+		for (const key of keys) {
+			rolledStats[key] = { rolls: [], dropped: 0, total: 0, locked: false };
+		}
+	}
+
+	let allStatsRolled = $derived(
+		Object.values(rolledStats).every(s => s.locked)
+	);
+
+	// ── Feats ─────────────────────────────────────────────
+	interface FeatOption {
+		name: string;
+		desc: string;
+		prereq?: string;
+	}
+
+	const GENERAL_FEATS: FeatOption[] = [
+		{ name: 'Alertness', desc: '+2 Listen and Spot checks' },
+		{ name: 'Brawl', desc: '+1 unarmed attack, 1d6 unarmed damage' },
+		{ name: 'Cautious', desc: '+2 Demolitions and Disable Device' },
+		{ name: 'Combat Martial Arts', desc: '+1 unarmed, 1d4 lethal unarmed damage', prereq: 'BAB +1' },
+		{ name: 'Confident', desc: '+2 Gamble and Intimidate' },
+		{ name: 'Creative', desc: '+2 Craft and Perform' },
+		{ name: 'Deceptive', desc: '+2 Bluff and Disguise' },
+		{ name: 'Dodge', desc: '+1 dodge bonus to AC vs. chosen target' },
+		{ name: 'Educated', desc: '+2 to any two Knowledge skills' },
+		{ name: 'Endurance', desc: '+4 on extended physical activity checks' },
+		{ name: 'Focused', desc: '+2 to any two skills of your choice' },
+		{ name: 'Great Fortitude', desc: '+2 Fortitude saves' },
+		{ name: 'Guide', desc: '+2 Navigate and Survival' },
+		{ name: 'Improved Initiative', desc: '+4 Initiative rolls' },
+		{ name: 'Iron Will', desc: '+2 Will saves' },
+		{ name: 'Lightning Reflexes', desc: '+2 Reflex saves' },
+		{ name: 'Low Profile', desc: '+2 Hide, less likely to be recognized' },
+		{ name: 'Meticulous', desc: '+2 Investigate and Search' },
+		{ name: 'Nimble', desc: '+2 Escape Artist and Sleight of Hand' },
+		{ name: 'Point Blank Shot', desc: '+1 attack and damage within 30 ft.' },
+		{ name: 'Power Attack', desc: 'Trade attack bonus for melee damage' },
+		{ name: 'Stealthy', desc: '+2 Hide and Move Silently' },
+		{ name: 'Studious', desc: '+2 Decipher Script and Research' },
+		{ name: 'Toughness', desc: '+3 hit points' },
+		{ name: 'Trustworthy', desc: '+2 Diplomacy and Gather Information' }
+	];
+
+	const CLASS_BONUS_FEATS: Record<string, FeatOption[]> = {
+		'Strong Hero': [
+			{ name: 'Animal Affinity', desc: '+2 Handle Animal and Ride' },
+			{ name: 'Archaic Weapons Proficiency', desc: 'No penalty with swords, axes, etc.' },
+			{ name: 'Brawl', desc: '+1 unarmed attack, 1d6 unarmed damage' },
+			{ name: 'Cleave', desc: 'Extra melee attack after dropping a foe', prereq: 'Power Attack' },
+			{ name: 'Combat Reflexes', desc: 'Additional attacks of opportunity' },
+			{ name: 'Great Cleave', desc: 'Unlimited cleave attacks per round', prereq: 'Cleave' },
+			{ name: 'Improved Brawl', desc: '+2 unarmed, 1d8 unarmed damage', prereq: 'Brawl' },
+			{ name: 'Power Attack', desc: 'Trade attack bonus for melee damage' }
+		],
+		'Fast Hero': [
+			{ name: 'Combat Reflexes', desc: 'Additional attacks of opportunity' },
+			{ name: 'Dodge', desc: '+1 dodge bonus to AC vs. chosen target' },
+			{ name: 'Double Tap', desc: '+1 damage with firearms at close range', prereq: 'Point Blank Shot' },
+			{ name: 'Mobility', desc: '+4 AC vs. attacks of opportunity from movement', prereq: 'Dodge' },
+			{ name: 'Point Blank Shot', desc: '+1 attack and damage within 30 ft.' },
+			{ name: 'Stealthy', desc: '+2 Hide and Move Silently' }
+		],
+		'Tough Hero': [
+			{ name: 'Alertness', desc: '+2 Listen and Spot checks' },
+			{ name: 'Brawl', desc: '+1 unarmed attack, 1d6 unarmed damage' },
+			{ name: 'Endurance', desc: '+4 on extended physical activity checks' },
+			{ name: 'Great Fortitude', desc: '+2 Fortitude saves' },
+			{ name: 'Improved Damage Threshold', desc: '+3 massive damage threshold' },
+			{ name: 'Toughness', desc: '+3 hit points' }
+		],
+		'Smart Hero': [
+			{ name: 'Cautious', desc: '+2 Demolitions and Disable Device' },
+			{ name: 'Educated', desc: '+2 to any two Knowledge skills' },
+			{ name: 'Meticulous', desc: '+2 Investigate and Search' },
+			{ name: 'Studious', desc: '+2 Decipher Script and Research' },
+			{ name: 'Vehicle Expert', desc: '+2 Drive and Pilot' }
+		],
+		'Dedicated Hero': [
+			{ name: 'Alertness', desc: '+2 Listen and Spot checks' },
+			{ name: 'Attentive', desc: '+2 Investigate and Sense Motive' },
+			{ name: 'Educated', desc: '+2 to any two Knowledge skills' },
+			{ name: 'Focused', desc: '+2 to any two skills of your choice' },
+			{ name: 'Iron Will', desc: '+2 Will saves' },
+			{ name: 'Studious', desc: '+2 Decipher Script and Research' }
+		],
+		'Charismatic Hero': [
+			{ name: 'Confident', desc: '+2 Gamble and Intimidate' },
+			{ name: 'Creative', desc: '+2 Craft and Perform' },
+			{ name: 'Deceptive', desc: '+2 Bluff and Disguise' },
+			{ name: 'Dodge', desc: '+1 dodge bonus to AC vs. chosen target' },
+			{ name: 'Trustworthy', desc: '+2 Diplomacy and Gather Information' },
+			{ name: 'Windfall', desc: 'Start with extra wealth' }
+		]
+	};
+
+	let selectedGeneralFeat = $state<string>('');
+	let selectedBonusFeat = $state<string>('');
+
+	// ── Slash Commands ────────────────────────────────────
+	interface SlashCommand {
+		command: string;
+		label: string;
+		description: string;
+		category: 'action' | 'skill' | 'info';
+		rank?: number;
+	}
+
+	const BASE_COMMANDS: SlashCommand[] = [
+		{ command: '/look', label: 'Look', description: 'Examine your surroundings', category: 'action' },
+		{ command: '/attack', label: 'Attack', description: 'Attack a target', category: 'action' },
+		{ command: '/move', label: 'Move', description: 'Travel to a location', category: 'action' },
+		{ command: '/use', label: 'Use', description: 'Use an item', category: 'action' },
+		{ command: '/equip', label: 'Equip', description: 'Equip a weapon', category: 'action' },
+		{ command: '/talk', label: 'Talk', description: 'Talk to someone', category: 'action' },
+		{ command: '/rest', label: 'Rest', description: 'Take a breather', category: 'action' },
+		{ command: '/pickup', label: 'Pick Up', description: 'Grab an item', category: 'action' },
+		{ command: '/inventory', label: 'Inventory', description: 'Check your inventory', category: 'info' },
+		{ command: '/stats', label: 'Stats', description: 'View character sheet', category: 'info' },
+		{ command: '/admin', label: 'Admin', description: 'Toggle god mode (1000 HP, always nat 20)', category: 'info' },
+		{ command: '/end', label: 'End Scene', description: 'Exit romance mode', category: 'info' },
+	];
+
+	const ALL_SKILLS = [
+		'Balance', 'Bluff', 'Climb', 'Computer Use', 'Concentration', 'Craft',
+		'Demolitions', 'Diplomacy', 'Disable Device', 'Disguise', 'Drive',
+		'Escape Artist', 'Forgery', 'Gamble', 'Gather Information', 'Handle Animal',
+		'Hide', 'Intimidate', 'Investigate', 'Jump', 'Knowledge (Arcane)',
+		'Knowledge (Current Events)', 'Knowledge (Streetwise)', 'Knowledge (Technology)',
+		'Listen', 'Move Silently', 'Navigate', 'Perception', 'Perform', 'Pilot',
+		'Profession', 'Repair', 'Research', 'Search', 'Sense Motive',
+		'Sleight of Hand', 'Spot', 'Survival', 'Swim', 'Treat Injury', 'Tumble'
+	];
+
+	function skillToCommand(skill: string): string {
+		return '/' + skill.toLowerCase().replace(/[()]/g, '').replace(/\s+/g, '-');
+	}
+
+	let selectedCmdIdx = $state(0);
+
+	let allCommands = $derived.by(() => {
+		const cmds: SlashCommand[] = [...BASE_COMMANDS];
+		if (character) {
+			for (const skill of ALL_SKILLS) {
+				const rank = (character.skills as Record<string, number>)[skill] ?? 0;
+				cmds.push({
+					command: skillToCommand(skill),
+					label: skill,
+					description: rank > 0 ? skill + ' check (+' + rank + ')' : skill + ' check (untrained)',
+					category: 'skill',
+					rank
+				});
+			}
+		}
+		cmds.sort((a, b) => {
+			const order = { action: 0, skill: 1, info: 2 };
+			if (order[a.category] !== order[b.category]) return order[a.category] - order[b.category];
+			if (a.category === 'skill' && b.category === 'skill') {
+				if ((a.rank ?? 0) > 0 && (b.rank ?? 0) === 0) return -1;
+				if ((a.rank ?? 0) === 0 && (b.rank ?? 0) > 0) return 1;
+			}
+			return a.label.localeCompare(b.label);
+		});
+		return cmds;
+	});
+
+	let cmdMatch = $derived(input.match(/^\/(\S*)$/));
+	let showCommands = $derived(cmdMatch !== null && !isLoading);
+	let cmdFilter = $derived(cmdMatch ? cmdMatch[1].toLowerCase() : '');
+	let filteredCommands = $derived.by(() => {
+		if (!showCommands) return [];
+		return allCommands.filter(c => {
+			const name = c.command.slice(1);
+			return name.startsWith(cmdFilter) || c.label.toLowerCase().startsWith(cmdFilter);
+		}).slice(0, 10);
+	});
+
+	$effect(() => {
+		cmdFilter;
+		selectedCmdIdx = 0;
+	});
+
+	function selectCommand(cmd: SlashCommand) {
+		input = cmd.command + ' ';
+	}
+
+	// ── Character Creation ─────────────────────────────────
 	const heroClasses = [
 		{ name: 'Strong Hero', key: 'STR', desc: 'Melee combat, feats of strength. The bat-swinger.', emoji: '💪' },
 		{ name: 'Fast Hero', key: 'DEX', desc: 'Agility, stealth, reflexes. Hard to hit, hard to find.', emoji: '⚡' },
@@ -71,6 +306,9 @@
 			.then(data => {
 				if (data.character) {
 					character = data.character;
+					if (data.worldTime) worldTime = data.worldTime;
+					if (data.dayNumber != null) dayNumber = data.dayNumber;
+					messages = [];
 					phase = 'play';
 					connectStream();
 				}
@@ -81,17 +319,60 @@
 		characterName = '';
 		selectedClass = 'Strong Hero';
 		joinError = '';
+		creationStep = 'basics';
+		useTemplate = true;
+		rerollAllStats();
+		selectedGeneralFeat = '';
+		selectedBonusFeat = '';
 		phase = 'create';
 	}
 
+	function advanceCreation() {
+		if (creationStep === 'basics') {
+			if (!characterName.trim()) {
+				joinError = 'Your character needs a name.';
+				return;
+			}
+			joinError = '';
+			if (useTemplate) {
+				// Skip stat rolling — server auto-assigns from class template
+				creationStep = 'feats';
+			} else {
+				creationStep = 'stats';
+			}
+		} else if (creationStep === 'stats') {
+			if (!allStatsRolled) {
+				joinError = 'Roll all your stats first.';
+				return;
+			}
+			joinError = '';
+			creationStep = 'feats';
+		} else if (creationStep === 'feats') {
+			createCharacter();
+		}
+	}
+
 	async function createCharacter() {
-		if (!characterName.trim()) {
-			joinError = 'Your character needs a name.';
+		if (!selectedGeneralFeat) {
+			joinError = 'Pick a general feat.';
+			return;
+		}
+		if (!selectedBonusFeat) {
+			joinError = 'Pick a class bonus feat.';
 			return;
 		}
 
 		isJoining = true;
 		joinError = '';
+
+		// Build abilities from rolled stats (only if manually rolled)
+		let abilities: Record<string, number> | undefined;
+		if (!useTemplate) {
+			abilities = {};
+			for (const [key, stat] of Object.entries(rolledStats)) {
+				abilities[key] = stat.total;
+			}
+		}
 
 		try {
 			const res = await fetch('/api/join', {
@@ -100,7 +381,9 @@
 				body: JSON.stringify({
 					playerName: playerName.trim(),
 					characterName: characterName.trim(),
-					heroClass: selectedClass
+					heroClass: selectedClass,
+					...(abilities ? { abilities } : {}),
+					feats: [selectedGeneralFeat, selectedBonusFeat]
 				})
 			});
 
@@ -117,8 +400,20 @@
 			localStorage.setItem('infiltration_playerId', data.playerId);
 			localStorage.setItem('infiltration_playerName', playerName.trim());
 
+			messages = [];
 			phase = 'play';
-			connectStream();
+			connectStream(true);
+
+			// Auto-fire a /look so the Director narrates the opening scene
+			setTimeout(() => {
+				if (playerId) {
+					fetch('/api/action', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ playerId, action: '/look' })
+					}).catch(() => {});
+				}
+			}, 500);
 		} catch (e) {
 			joinError = 'Connection failed. Is the server running?';
 		} finally {
@@ -160,10 +455,10 @@
 		}
 	}
 
-	function connectStream() {
+	function connectStream(fresh = false) {
 		if (eventSource) eventSource.close();
 
-		eventSource = new EventSource('/api/stream');
+		eventSource = new EventSource(`/api/stream${fresh ? '?fresh=1' : ''}`);
 
 		eventSource.onmessage = (event) => {
 			try {
@@ -222,8 +517,14 @@
 		try {
 			const res = await fetch(`/api/state?playerId=${playerId}`);
 			const data = await res.json();
+			if (data.worldTime) worldTime = data.worldTime;
+			if (data.dayNumber != null) dayNumber = data.dayNumber;
 			if (data.character) {
 				character = data.character;
+				// Detect death
+				if (!data.character.alive && phase === 'play') {
+					phase = 'dead';
+				}
 			}
 		} catch {}
 	}
@@ -237,7 +538,33 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter' && !event.shiftKey) {
+		if (showCommands && filteredCommands.length > 0) {
+			if (event.key === 'ArrowDown') {
+				event.preventDefault();
+				selectedCmdIdx = (selectedCmdIdx + 1) % filteredCommands.length;
+				return;
+			}
+			if (event.key === 'ArrowUp') {
+				event.preventDefault();
+				selectedCmdIdx = (selectedCmdIdx - 1 + filteredCommands.length) % filteredCommands.length;
+				return;
+			}
+			if (event.key === 'Tab') {
+				event.preventDefault();
+				selectCommand(filteredCommands[selectedCmdIdx]);
+				return;
+			}
+			if (event.key === 'Enter') {
+				event.preventDefault();
+				selectCommand(filteredCommands[selectedCmdIdx]);
+				return;
+			}
+			if (event.key === 'Escape') {
+				event.preventDefault();
+				input = '';
+				return;
+			}
+		} else if (event.key === 'Enter' && !event.shiftKey) {
 			event.preventDefault();
 			submitAction();
 		}
@@ -262,6 +589,16 @@
 		}
 	}
 
+	function getDrunkClass(): string {
+		const level = character?.inebriation ?? 0;
+		if (level <= 0) return '';
+		if (level <= 2) return 'drunk-buzzed';
+		if (level <= 4) return 'drunk-tipsy';
+		if (level <= 6) return 'drunk-hammered';
+		if (level <= 8) return 'drunk-wasted';
+		return 'drunk-obliterated';
+	}
+
 	function abilityMod(score: number): string {
 		const mod = Math.floor((score - 10) / 2);
 		return mod >= 0 ? `+${mod}` : `${mod}`;
@@ -284,6 +621,9 @@
 				.then(data => {
 					if (data.character) {
 						character = data.character;
+						if (data.worldTime) worldTime = data.worldTime;
+						if (data.dayNumber != null) dayNumber = data.dayNumber;
+						messages = [];
 						phase = 'play';
 						connectStream();
 					} else {
@@ -439,9 +779,23 @@
 			<h1 class="title">INFILTRATION</h1>
 			<p class="subtitle">New character for {playerName}</p>
 			<div class="title-rule"></div>
+			<div class="creation-steps">
+				<span class="step" class:active={creationStep === 'basics'} class:done={creationStep !== 'basics'}>1. BASICS</span>
+				<span class="step-arrow">></span>
+				{#if !useTemplate}
+					<span class="step" class:active={creationStep === 'stats'} class:done={creationStep === 'feats'}>2. STATS</span>
+					<span class="step-arrow">></span>
+					<span class="step" class:active={creationStep === 'feats'}>3. FEATS</span>
+				{:else}
+					<span class="step" class:active={creationStep === 'feats'}>2. FEATS</span>
+				{/if}
+			</div>
 		</div>
 
 		<div class="join-form">
+
+		<!-- ── STEP 1: NAME & CLASS ── -->
+		{#if creationStep === 'basics'}
 			<div class="form-group">
 				<label for="characterName">CHARACTER NAME</label>
 				<input
@@ -471,28 +825,227 @@
 				</div>
 			</div>
 
+			<div class="form-group">
+				<label>ABILITY SCORES</label>
+				<div class="stat-method-toggle">
+					<button
+						class="stat-method-btn"
+						class:active={useTemplate}
+						onclick={() => useTemplate = true}
+					>
+						<span class="method-label">TEMPLATE</span>
+						<span class="method-desc">Auto-assigned from class</span>
+					</button>
+					<button
+						class="stat-method-btn"
+						class:active={!useTemplate}
+						onclick={() => useTemplate = false}
+					>
+						<span class="method-label">ROLL</span>
+						<span class="method-desc">4d6 drop lowest, by hand</span>
+					</button>
+				</div>
+			</div>
+
+		<!-- ── STEP 2: ROLL STATS ── -->
+		{:else if creationStep === 'stats'}
+			<div class="form-group">
+				<label>ROLL ABILITY SCORES <span class="label-sub">4d6, drop lowest</span></label>
+				<div class="stats-roll-grid">
+					{#each Object.entries(rolledStats) as [key, stat]}
+						<button
+							class="stat-roll-card"
+							class:rolled={stat.locked}
+							class:high-roll={stat.total >= 16}
+							class:low-roll={stat.total <= 8}
+							onclick={() => rollStat(key as AbilityKey)}
+						>
+							<span class="stat-roll-label">{ABILITY_LABELS[key as AbilityKey]}</span>
+							{#if stat.locked}
+								<span class="stat-roll-total">{stat.total}</span>
+								<span class="stat-roll-dice">
+									{#each stat.rolls as die, i}
+										<span class="die" class:dropped={i === 3}>{die}</span>
+									{/each}
+								</span>
+								<span class="stat-roll-mod">
+									({Math.floor((stat.total - 10) / 2) >= 0 ? '+' : ''}{Math.floor((stat.total - 10) / 2)})
+								</span>
+							{:else}
+								<span class="stat-roll-empty">CLICK TO ROLL</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+				<div class="stat-roll-actions">
+					<button class="roll-all-button" onclick={rollAllStats} disabled={allStatsRolled}>
+						ROLL ALL
+					</button>
+					<button class="roll-all-button reroll" onclick={rerollAllStats}>
+						REROLL ALL
+					</button>
+				</div>
+			</div>
+
+		<!-- ── STEP 3: CHOOSE FEATS ── -->
+		{:else if creationStep === 'feats'}
+			<div class="form-group">
+				<label>GENERAL FEAT <span class="label-sub">pick one</span></label>
+				<div class="feat-list">
+					{#each GENERAL_FEATS as feat}
+						<button
+							class="feat-card"
+							class:selected={selectedGeneralFeat === feat.name}
+							onclick={() => selectedGeneralFeat = feat.name}
+						>
+							<span class="feat-name">{feat.name}</span>
+							<span class="feat-desc">{feat.desc}</span>
+						</button>
+					{/each}
+				</div>
+			</div>
+
+			<div class="form-group">
+				<label>{selectedClass.toUpperCase()} BONUS FEAT <span class="label-sub">pick one</span></label>
+				<div class="feat-list">
+					{#each (CLASS_BONUS_FEATS[selectedClass] ?? []) as feat}
+						<button
+							class="feat-card"
+							class:selected={selectedBonusFeat === feat.name}
+							onclick={() => selectedBonusFeat = feat.name}
+						>
+							<span class="feat-name">{feat.name}</span>
+							<span class="feat-desc">{feat.desc}</span>
+							{#if feat.prereq}
+								<span class="feat-prereq">Requires: {feat.prereq}</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
 			{#if joinError}
 				<div class="error-msg">{joinError}</div>
 			{/if}
 
 			<button
 				class="join-button"
-				onclick={createCharacter}
+				onclick={advanceCreation}
 				disabled={isJoining}
 			>
 				{#if isJoining}
 					<span class="loading-dots">ROLLING DICE</span>
-				{:else}
+				{:else if creationStep === 'feats'}
 					ENTER MADISON
+				{:else}
+					CONTINUE
 				{/if}
 			</button>
 
-			{#if existingCharacters.length > 0}
+			{#if creationStep !== 'basics'}
+				<button class="switch-player-button" onclick={() => {
+					if (creationStep === 'stats') creationStep = 'basics';
+					else if (creationStep === 'feats') creationStep = useTemplate ? 'basics' : 'stats';
+					joinError = '';
+				}}>
+					BACK
+				</button>
+			{:else if existingCharacters.length > 0}
 				<button class="switch-player-button" onclick={() => phase = 'select'}>
 					BACK TO CHARACTER SELECT
 				</button>
 			{/if}
 		</div>
+	</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- DEATH SCREEN                                               -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+{:else if phase === 'dead'}
+<div class="death-screen">
+	<div class="death-container">
+		<div class="death-skull">💀</div>
+		<h1 class="death-title">YOU DIED</h1>
+		{#if character}
+			<div class="death-name">{character.name} the {character.class}</div>
+			<div class="death-epitaph">The infiltrators claimed another victim.</div>
+
+			<div class="death-stats">
+				<h2 class="stats-header">═══ FINAL REPORT ═══</h2>
+				<div class="stats-grid">
+					<div class="stat-row">
+						<span class="stat-label">Survived</span>
+						<span class="stat-value">{(() => {
+							if (!character.createdAt) return '???';
+							const ms = new Date(character.lastActive ?? Date.now()).getTime() - new Date(character.createdAt).getTime();
+							const mins = Math.floor(ms / 60000);
+							if (mins < 60) return mins + ' minutes';
+							const hrs = Math.floor(mins / 60);
+							return hrs + 'h ' + (mins % 60) + 'm';
+						})()}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Level Reached</span>
+						<span class="stat-value">{character.level}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">XP Earned</span>
+						<span class="stat-value">{character.xp}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Enemies Killed</span>
+						<span class="stat-value">{character.stats?.enemiesKilled ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Damage Dealt</span>
+						<span class="stat-value">{character.stats?.damageDealt ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Damage Taken</span>
+						<span class="stat-value">{character.stats?.damageTaken ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Money Earned</span>
+						<span class="stat-value">${character.stats?.moneyEarned ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Money Spent</span>
+						<span class="stat-value">${character.stats?.moneySpent ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Items Found</span>
+						<span class="stat-value">{character.stats?.itemsFound ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Drinks Consumed</span>
+						<span class="stat-value">{character.stats?.drinksConsumed ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Critical Hits</span>
+						<span class="stat-value">{character.stats?.criticalHits ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Critical Fails</span>
+						<span class="stat-value">{character.stats?.criticalFails ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Romances</span>
+						<span class="stat-value">{character.stats?.romances ?? 0}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Actions Performed</span>
+						<span class="stat-value">{character.stats?.actionsPerformed ?? 0}</span>
+					</div>
+				</div>
+			</div>
+		{/if}
+
+		<button class="death-button" onclick={() => { character = null; playerId = null; phase = 'name'; }}>
+			RETURN TO CHARACTER SELECT
+		</button>
 	</div>
 </div>
 
@@ -510,6 +1063,14 @@
 
 		{#if sidebarOpen && character}
 			<div class="sidebar-content">
+				<!-- World Clock -->
+				{#if worldTime}
+					<div class="world-clock">
+						<div class="clock-time">{worldTime}</div>
+						<div class="clock-day">DAY {dayNumber}</div>
+					</div>
+				{/if}
+
 				<!-- Character Header -->
 				<div class="char-header">
 					<h2 class="char-name">{character.name}</h2>
@@ -520,14 +1081,19 @@
 				<!-- HP Bar -->
 				<div class="stat-block">
 					<div class="hp-label">
-						HP <span class="hp-numbers">{character.hp}/{character.maxHp}</span>
+						HP <span class="hp-numbers" class:hp-dying={character.hp < 0}>{character.hp}/{character.maxHp}</span>
+						{#if character.hp === 0}
+							<span class="hp-status disabled">DISABLED</span>
+						{:else if character.hp < 0 && character.hp > -10}
+							<span class="hp-status dying">DYING</span>
+						{/if}
 					</div>
 					<div class="hp-bar">
 						<div
 							class="hp-fill"
 							class:hp-low={character.hp / character.maxHp < 0.3}
 							class:hp-mid={character.hp / character.maxHp >= 0.3 && character.hp / character.maxHp < 0.6}
-							style="width: {(character.hp / character.maxHp) * 100}%"
+							style="width: {Math.max(0, (character.hp / character.maxHp) * 100)}%"
 						></div>
 					</div>
 				</div>
@@ -626,6 +1192,10 @@
 				<span class="header-title">INFILTRATION</span>
 				<span class="header-divider">|</span>
 				<span class="header-location">{character ? character.location.replace(/_/g, ' ').toUpperCase() : '???'}</span>
+				{#if worldTime}
+					<span class="header-divider">|</span>
+					<span class="header-clock">{worldTime} D{dayNumber}</span>
+				{/if}
 			</div>
 			<div class="header-right">
 				{#if isLoading}
@@ -633,12 +1203,23 @@
 				{/if}
 				<span class="header-status">
 					{character ? `HP ${character.hp}/${character.maxHp}` : ''}
+					{#if character?.inebriation && character.inebriation > 0}
+						<span class="drunk-indicator" title={(() => {
+							const level = character.inebriation;
+							const soberIn = Math.ceil(level * 1.5);
+							const label = level <= 2 ? 'Buzzed' : level <= 4 ? 'Tipsy' : level <= 6 ? 'Hammered' : level <= 8 ? 'Wasted' : 'Obliterated';
+							return `${label} (${level}/10) — sober in ~${soberIn} min`;
+						})()}>{'🍺'.repeat(Math.min(character.inebriation, 5))}</span>
+					{/if}
+					{#if character?.romanceMode}
+						<span class="romance-indicator">💋</span>
+					{/if}
 				</span>
 			</div>
 		</div>
 
 		<!-- Message Log -->
-		<div class="message-log" bind:this={logContainer}>
+		<div class="message-log {getDrunkClass()}" bind:this={logContainer}>
 			{#if messages.length === 0}
 				<div class="empty-log">
 					<p>The terminal hums softly. A cursor blinks.</p>
@@ -668,13 +1249,34 @@
 							{/if}
 						</span>
 					{/if}
-					<span class="entry-text">{@html formatNarration(entry.text)}</span>
+					{#if entry.type !== 'roll'}
+						<span class="entry-text">{@html formatNarration(entry.text)}</span>
+					{:else if !entry.roll}
+						<span class="entry-text">{@html formatNarration(entry.text)}</span>
+					{/if}
 				</div>
 			{/each}
 		</div>
 
 		<!-- Input Bar -->
 		<div class="input-bar">
+			{#if showCommands && filteredCommands.length > 0}
+				<div class="command-dropdown">
+					{#each filteredCommands as cmd, i}
+						<button
+							class="command-option"
+							class:selected={i === selectedCmdIdx}
+							onmousedown={(e) => { e.preventDefault(); selectCommand(cmd); }}
+						>
+							<span class="cmd-name">{cmd.command}</span>
+							<span class="cmd-desc">{cmd.description}</span>
+							{#if cmd.category === 'skill' && cmd.rank !== undefined && cmd.rank > 0}
+								<span class="cmd-rank">+{cmd.rank}</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+			{/if}
 			<span class="input-prompt">&gt;</span>
 			<input
 				type="text"
@@ -710,6 +1312,118 @@
 </script>
 
 <style>
+	/* ═══════════════════════════════════════════════════════ */
+	/* DEATH SCREEN                                           */
+	/* ═══════════════════════════════════════════════════════ */
+
+	.death-screen {
+		height: 100vh;
+		overflow-y: auto;
+		background: #0a0a0a;
+		padding: 2rem;
+	}
+
+	.death-container {
+		max-width: 500px;
+		width: 100%;
+		margin: 0 auto;
+		text-align: center;
+		padding-bottom: 4rem;
+	}
+
+	.death-skull {
+		font-size: 4rem;
+		margin-bottom: 0.5rem;
+		animation: death-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes death-pulse {
+		0%, 100% { opacity: 1; transform: scale(1); }
+		50% { opacity: 0.6; transform: scale(1.1); }
+	}
+
+	.death-title {
+		font-family: 'Courier New', monospace;
+		font-size: 3rem;
+		color: #cc0000;
+		text-shadow: 0 0 20px rgba(204, 0, 0, 0.5);
+		margin-bottom: 0.5rem;
+		letter-spacing: 0.3em;
+	}
+
+	.death-name {
+		color: var(--amber);
+		font-family: 'Courier New', monospace;
+		font-size: 1.2rem;
+		margin-bottom: 0.25rem;
+	}
+
+	.death-epitaph {
+		color: #666;
+		font-style: italic;
+		font-size: 0.9rem;
+		margin-bottom: 2rem;
+	}
+
+	.death-stats {
+		background: rgba(204, 0, 0, 0.05);
+		border: 1px solid #331111;
+		padding: 1.5rem;
+		margin-bottom: 2rem;
+		text-align: left;
+	}
+
+	.stats-header {
+		font-family: 'Courier New', monospace;
+		color: #cc0000;
+		font-size: 1rem;
+		text-align: center;
+		margin-bottom: 1rem;
+		letter-spacing: 0.15em;
+	}
+
+	.stats-grid {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.stat-row {
+		display: flex;
+		justify-content: space-between;
+		font-family: 'Courier New', monospace;
+		font-size: 0.85rem;
+		padding: 0.2rem 0;
+		border-bottom: 1px solid #1a1111;
+	}
+
+	.stat-label {
+		color: #888;
+	}
+
+	.stat-value {
+		color: var(--amber);
+		font-weight: bold;
+	}
+
+	.death-button {
+		background: transparent;
+		border: 1px solid #cc0000;
+		color: #cc0000;
+		padding: 0.8rem 2rem;
+		font-family: 'Courier New', monospace;
+		font-size: 1rem;
+		cursor: pointer;
+		letter-spacing: 0.1em;
+		transition: all 0.2s;
+		width: 100%;
+	}
+
+	.death-button:hover {
+		background: #cc0000;
+		color: #0a0a0a;
+	}
+
 	/* ═══════════════════════════════════════════════════════ */
 	/* JOIN SCREEN                                            */
 	/* ═══════════════════════════════════════════════════════ */
@@ -858,6 +1572,240 @@
 		font-size: 0.7rem;
 		color: var(--gray);
 		line-height: 1.4;
+	}
+
+	/* ── Creation Steps Indicator ── */
+	.creation-steps {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		margin-top: 0.75rem;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		letter-spacing: 0.05em;
+	}
+	.step {
+		color: var(--green-dark);
+		transition: color 0.2s;
+	}
+	.step.active {
+		color: var(--green);
+		text-shadow: 0 0 8px var(--green-glow);
+	}
+	.step.done {
+		color: var(--cyan-dim);
+	}
+	.step-arrow {
+		color: var(--green-dark);
+		font-size: 0.65rem;
+	}
+
+	/* ── Stat Method Toggle ── */
+	.stat-method-toggle {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.75rem;
+	}
+	.stat-method-btn {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.75rem;
+		background: var(--bg-dark);
+		border: 1px solid var(--green-dark);
+		border-radius: 4px;
+		cursor: pointer;
+		transition: all 0.15s;
+		font-family: var(--font-mono);
+	}
+	.stat-method-btn:hover {
+		border-color: var(--green);
+	}
+	.stat-method-btn.active {
+		border-color: var(--green);
+		background: rgba(0, 255, 65, 0.08);
+		box-shadow: 0 0 10px rgba(0, 255, 65, 0.15);
+	}
+	.method-label {
+		font-size: 0.85rem;
+		font-weight: bold;
+		color: var(--green);
+		letter-spacing: 0.1em;
+	}
+	.stat-method-btn:not(.active) .method-label {
+		color: var(--green-dark);
+	}
+	.method-desc {
+		font-size: 0.65rem;
+		color: var(--gray);
+	}
+
+	/* ── Stat Rolling ── */
+	.stats-roll-grid {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 0.75rem;
+	}
+	.stat-roll-card {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.3rem;
+		padding: 0.75rem 0.5rem;
+		background: var(--bg-input);
+		border: 1px solid var(--green-dark);
+		border-radius: 3px;
+		cursor: pointer;
+		transition: all 0.2s;
+		font-family: var(--font-mono);
+		color: var(--green-dim);
+		min-height: 5.5rem;
+	}
+	.stat-roll-card:not(:disabled):hover {
+		border-color: var(--green-dim);
+		background: rgba(0, 255, 65, 0.03);
+	}
+	.stat-roll-card.rolled {
+		border-color: var(--green);
+		cursor: pointer;
+	}
+	.stat-roll-card.high-roll {
+		border-color: var(--cyan);
+		background: rgba(0, 200, 255, 0.05);
+		box-shadow: 0 0 10px rgba(0, 200, 255, 0.15);
+	}
+	.stat-roll-card.low-roll {
+		border-color: var(--red-dim);
+		background: rgba(255, 51, 51, 0.05);
+	}
+	.stat-roll-label {
+		font-size: 0.6rem;
+		letter-spacing: 0.15em;
+		color: var(--green-dim);
+		font-weight: 700;
+	}
+	.stat-roll-total {
+		font-size: 1.6rem;
+		font-weight: 900;
+		color: var(--green);
+		line-height: 1;
+		text-shadow: 0 0 12px var(--green-glow);
+	}
+	.stat-roll-dice {
+		display: flex;
+		gap: 0.3rem;
+		font-size: 0.75rem;
+	}
+	.die {
+		color: var(--green);
+		font-weight: 700;
+	}
+	.die.dropped {
+		color: var(--red-dim);
+		text-decoration: line-through;
+	}
+	.stat-roll-mod {
+		font-size: 0.7rem;
+		color: var(--cyan-dim);
+	}
+	.stat-roll-empty {
+		font-size: 0.7rem;
+		color: var(--green-dark);
+		letter-spacing: 0.05em;
+		padding: 0.5rem 0;
+	}
+	.stat-roll-actions {
+		display: flex;
+		gap: 0.5rem;
+		margin-top: 0.5rem;
+	}
+	.roll-all-button {
+		flex: 1;
+		padding: 0.5rem;
+		background: transparent;
+		border: 1px solid var(--green-dim);
+		color: var(--green);
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		font-weight: 700;
+		letter-spacing: 0.1em;
+		cursor: pointer;
+		transition: all 0.2s;
+		border-radius: 2px;
+	}
+	.roll-all-button:hover:not(:disabled) {
+		background: rgba(0, 255, 65, 0.05);
+		border-color: var(--green);
+		box-shadow: 0 0 8px var(--green-glow);
+	}
+	.roll-all-button:disabled {
+		opacity: 0.3;
+		cursor: not-allowed;
+	}
+	.roll-all-button.reroll {
+		border-color: var(--cyan-dim);
+		color: var(--cyan-dim);
+	}
+	.roll-all-button.reroll:hover {
+		border-color: var(--cyan);
+		color: var(--cyan);
+		background: rgba(0, 200, 255, 0.05);
+	}
+	.label-sub {
+		font-size: 0.65rem;
+		color: var(--green-dark);
+		font-weight: 400;
+		letter-spacing: 0.05em;
+	}
+
+	/* ── Feat Selection ── */
+	.feat-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		max-height: 18rem;
+		overflow-y: auto;
+		padding-right: 0.25rem;
+	}
+	.feat-card {
+		display: flex;
+		flex-direction: column;
+		padding: 0.5rem 0.75rem;
+		background: var(--bg-input);
+		border: 1px solid var(--green-dark);
+		border-radius: 2px;
+		cursor: pointer;
+		transition: all 0.15s;
+		text-align: left;
+		font-family: var(--font-mono);
+		color: var(--green-dim);
+	}
+	.feat-card:hover {
+		border-color: var(--green-dim);
+		background: rgba(0, 255, 65, 0.03);
+	}
+	.feat-card.selected {
+		border-color: var(--green);
+		background: rgba(0, 255, 65, 0.08);
+		box-shadow: 0 0 8px var(--green-glow);
+	}
+	.feat-name {
+		font-size: 0.8rem;
+		font-weight: 700;
+		color: var(--green);
+	}
+	.feat-desc {
+		font-size: 0.65rem;
+		color: var(--gray);
+		line-height: 1.3;
+	}
+	.feat-prereq {
+		font-size: 0.6rem;
+		color: var(--amber, #f0a030);
+		font-style: italic;
+		margin-top: 0.15rem;
 	}
 
 	.error-msg {
@@ -1066,6 +2014,42 @@
 		flex: 1;
 	}
 
+	/* ── World Clock ───────────────────────────────────── */
+
+	.world-clock {
+		text-align: center;
+		padding: 0.6rem 0.5rem;
+		margin-bottom: 0.75rem;
+		border: 1px solid var(--green-dark);
+		border-radius: 3px;
+		background: var(--bg-input);
+	}
+
+	.clock-time {
+		font-family: var(--font-display);
+		font-size: 1.3rem;
+		font-weight: 700;
+		color: var(--amber);
+		letter-spacing: 0.1em;
+		text-shadow: 0 0 12px rgba(255, 176, 0, 0.3);
+		line-height: 1.2;
+	}
+
+	.clock-day {
+		font-family: var(--font-mono);
+		font-size: 0.65rem;
+		color: var(--green-dim);
+		letter-spacing: 0.2em;
+		margin-top: 0.15rem;
+	}
+
+	.header-clock {
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		color: var(--amber);
+		letter-spacing: 0.05em;
+	}
+
 	.char-header {
 		margin-bottom: 1rem;
 		padding-bottom: 0.75rem;
@@ -1131,6 +2115,28 @@
 
 	.hp-fill.hp-mid {
 		background: var(--amber);
+	}
+
+	.hp-numbers.hp-dying {
+		color: var(--red);
+		animation: pulse 1s infinite;
+	}
+
+	.hp-status {
+		font-size: 0.65rem;
+		font-weight: bold;
+		text-transform: uppercase;
+		margin-left: 0.5rem;
+		letter-spacing: 0.1em;
+	}
+
+	.hp-status.disabled {
+		color: var(--amber);
+	}
+
+	.hp-status.dying {
+		color: var(--red);
+		animation: pulse 1s infinite;
 	}
 
 	.stat-row {
@@ -1442,12 +2448,73 @@
 	/* ── Input Bar ─────────────────────────────────────── */
 
 	.input-bar {
+		position: relative;
 		display: flex;
 		align-items: center;
 		padding: 0.75rem 1rem;
 		background: var(--bg-panel);
 		border-top: 1px solid var(--green-dark);
 		gap: 0.5rem;
+		flex-shrink: 0;
+	}
+
+	/* ── Slash Command Dropdown ─────────────────────── */
+
+	.command-dropdown {
+		position: absolute;
+		bottom: 100%;
+		left: 0;
+		right: 0;
+		background: var(--bg-panel);
+		border: 1px solid var(--green-dark);
+		border-bottom: none;
+		max-height: 320px;
+		overflow-y: auto;
+		z-index: 100;
+	}
+
+	.command-option {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		width: 100%;
+		padding: 0.45rem 1rem;
+		background: none;
+		border: none;
+		border-bottom: 1px solid rgba(0, 77, 25, 0.3);
+		color: var(--green-dim);
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		cursor: pointer;
+		text-align: left;
+	}
+
+	.command-option:last-child {
+		border-bottom: none;
+	}
+
+	.command-option:hover,
+	.command-option.selected {
+		background: rgba(0, 255, 65, 0.08);
+		color: var(--green);
+	}
+
+	.cmd-name {
+		color: var(--green);
+		font-weight: 600;
+		min-width: 160px;
+		flex-shrink: 0;
+	}
+
+	.cmd-desc {
+		color: var(--gray);
+		flex: 1;
+	}
+
+	.cmd-rank {
+		color: var(--amber);
+		font-weight: 700;
+		font-size: 0.8rem;
 		flex-shrink: 0;
 	}
 
@@ -1518,6 +2585,10 @@
 			grid-template-columns: 1fr;
 		}
 
+		.stats-roll-grid {
+			grid-template-columns: repeat(2, 1fr);
+		}
+
 		.sidebar {
 			position: absolute;
 			left: 0;
@@ -1547,5 +2618,74 @@
 			border-radius: 0 4px 4px 0;
 			padding: 8px;
 		}
+	}
+
+	/* ── Inebriation Effects ───────────────────────────── */
+
+	.drunk-buzzed .entry-narration .entry-text {
+		text-shadow: 0 0 4px rgba(180, 220, 255, 0.35), 0 0 8px rgba(180, 220, 255, 0.15);
+	}
+
+	.drunk-tipsy .entry-narration .entry-text {
+		animation: drunk-sway 3s ease-in-out infinite, drunk-rainbow 8s linear infinite;
+		filter: blur(0.3px);
+		letter-spacing: 0.02em;
+	}
+
+	.drunk-hammered .entry-narration .entry-text {
+		animation: drunk-sway 2s ease-in-out infinite, drunk-rainbow 5s linear infinite;
+		filter: blur(0.5px);
+		letter-spacing: 0.05em;
+		word-spacing: 0.1em;
+	}
+
+	.drunk-wasted .entry-narration .entry-text {
+		animation: drunk-sway 1.5s ease-in-out infinite, drunk-rainbow 3s linear infinite;
+		filter: blur(0.8px);
+		letter-spacing: 0.08em;
+		word-spacing: 0.2em;
+	}
+
+	.drunk-obliterated .entry-narration .entry-text {
+		animation: drunk-sway 1s ease-in-out infinite, drunk-rainbow 2s linear infinite, drunk-zoom 3s ease-in-out infinite;
+		filter: blur(1.2px);
+		letter-spacing: 0.12em;
+		word-spacing: 0.3em;
+	}
+
+	@keyframes drunk-sway {
+		0%, 100% { transform: translateX(0) rotate(0deg); }
+		25% { transform: translateX(3px) rotate(0.3deg); }
+		50% { transform: translateX(-2px) rotate(-0.2deg); }
+		75% { transform: translateX(4px) rotate(0.4deg); }
+	}
+
+	@keyframes drunk-rainbow {
+		0% { color: #ff5555; }
+		16% { color: #ffaa33; }
+		33% { color: #ffff55; }
+		50% { color: #55ff55; }
+		66% { color: #5555ff; }
+		83% { color: #ff55ff; }
+		100% { color: #ff5555; }
+	}
+
+	@keyframes drunk-zoom {
+		0%, 100% { transform: scale(1); }
+		50% { transform: scale(1.02); }
+	}
+
+	.drunk-indicator {
+		margin-left: 0.5rem;
+	}
+
+	.romance-indicator {
+		margin-left: 0.5rem;
+		animation: romance-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes romance-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.4; }
 	}
 </style>

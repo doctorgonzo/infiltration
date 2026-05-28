@@ -105,6 +105,29 @@ export interface Character {
 	notes: string[];          // character-specific notes/flags
 	alive: boolean;
 	lastActive?: string;      // ISO timestamp — characters fade after 60s of inactivity
+	godMode?: boolean;        // /admin toggle — 1000 HP, always nat 20
+	originalMaxHp?: number;   // stash real maxHp when godMode activates
+	inebriation: number;      // 0-10 drunk/high scale
+	romanceMode?: boolean;    // routed to local uncensored model
+	romanceNpc?: string;      // NPC id or name for active romance
+	romanceContext?: string;  // scene context from the Director
+	// ── Lifetime Stats ────────────────────────────────
+	createdAt: string;        // ISO timestamp
+	stats: CharacterStats;
+}
+
+export interface CharacterStats {
+	enemiesKilled: number;
+	damageDealt: number;
+	damageTaken: number;
+	moneyEarned: number;
+	moneySpent: number;
+	drinksConsumed: number;
+	itemsFound: number;
+	criticalHits: number;
+	criticalFails: number;
+	romances: number;
+	actionsPerformed: number;
 }
 
 // ── Location ───────────────────────────────────────────────
@@ -134,6 +157,18 @@ export interface NPC {
 	alive: boolean;
 	questGiver: boolean;
 	inventory: Item[];
+	relationshipScore: number;    // -100 to +100, starts at 0
+	memories: string[];           // short strings like "Player helped me escape", "Player threatened me"
+}
+
+// ── Random Encounters ─────────────────────────────────────
+export interface EncounterEntry {
+	name: string;
+	type: 'combat' | 'social' | 'skill' | 'loot' | 'atmosphere' | 'none';
+	description: string;
+	enemies?: Array<{name: string; hp: number; ac: number; attackBonus: number; damage: string; xpValue: number}>;
+	minDay?: number;        // minimum dayNumber for this encounter to appear
+	weight: number;         // relative probability weight
 }
 
 // ── Enemy ──────────────────────────────────────────────────
@@ -183,6 +218,8 @@ export interface Quest {
 export interface GameState {
 	worldTime: string;        // in-game time
 	dayNumber: number;
+	actionCounter: number;    // increments per processAction call; drives auto time advancement
+	combatSecondsElapsed?: number;  // tracks 6-second combat rounds for clock ticking
 	players: Record<string, Character>;   // keyed by player id
 	locations: Record<string, Location>;
 	npcs: Record<string, NPC>;

@@ -7,7 +7,7 @@
 // funny, and escalating.
 // ═══════════════════════════════════════════════════════════
 
-import type { GameState, Location, NPC, Enemy, Quest, Item } from '$lib/types';
+import type { GameState, Location, NPC, Enemy, Quest, Item, EncounterEntry } from '$lib/types';
 
 // ── Starting Items ─────────────────────────────────────────
 
@@ -217,63 +217,72 @@ const NPCS: Record<string, NPC> = {
 		description: 'A Madison PD officer who\'s noticed her colleagues acting strange. She\'s one of the few who hasn\'t been replaced — she can tell because the copies are always polite to suspects.',
 		location: 'capitol_square', attitude: 'friendly',
 		dialogue: ['Strange behavior of colleagues', 'Missing persons reports', 'Capitol basement activity'],
-		isInfiltrator: false, alive: true, questGiver: true, inventory: []
+		isInfiltrator: false, alive: true, questGiver: true, inventory: [],
+		relationshipScore: 10, memories: []
 	},
 	hot_dog_vendor: {
 		id: 'hot_dog_vendor', name: 'Frank the Hot Dog Guy',
 		description: 'He\'s been selling hot dogs on the Square for 30 years. His hot dogs are terrible but his intel is good. He sees everything from his cart.',
 		location: 'capitol_square', attitude: 'friendly',
 		dialogue: ['People watching observations', 'Strange deliveries at night', 'The good old days'],
-		isInfiltrator: false, alive: true, questGiver: false, inventory: []
+		isInfiltrator: false, alive: true, questGiver: false, inventory: [],
+		relationshipScore: 5, memories: []
 	},
 	barista_maya: {
 		id: 'barista_maya', name: 'Maya (Barista)',
 		description: 'She makes a perfect latte. Too perfect. Her smile doesn\'t reach her eyes, and she\'s been spelling every customer\'s name correctly. On the first try.',
 		location: 'state_street', attitude: 'neutral',
 		dialogue: ['Coffee orders', 'Weather', 'Have you tried NutriSynth?'],
-		isInfiltrator: true, alive: true, questGiver: false, inventory: []
+		isInfiltrator: true, alive: true, questGiver: false, inventory: [],
+		relationshipScore: 0, memories: []
 	},
 	bartender_sal: {
 		id: 'bartender_sal', name: 'Sal Benedetto',
 		description: 'Owner of a King Street cocktail bar. He noticed his business partner was replaced when the copy started suggesting they add a salad menu. Sal is terrified but angry.',
 		location: 'king_street', attitude: 'suspicious',
 		dialogue: ['Business partner replacement', 'Weird customers', 'Weapons for sale'],
-		isInfiltrator: false, alive: true, questGiver: true, inventory: [ITEMS.pistol_9mm]
+		isInfiltrator: false, alive: true, questGiver: true, inventory: [ITEMS.pistol_9mm],
+		relationshipScore: -5, memories: []
 	},
 	professor_vasquez: {
 		id: 'professor_vasquez', name: 'Dr. Elena Vasquez',
 		description: 'UW physics professor who was studying dimensional anomalies before it was an actual emergency. She has theories about the infiltrators and a prototype detection device. Hasn\'t slept in four days.',
 		location: 'campus_entrance', attitude: 'friendly',
 		dialogue: ['Dimensional theory', 'Detection technology', 'The signal in the steam tunnels'],
-		isInfiltrator: false, alive: true, questGiver: true, inventory: [ITEMS.detector_goggles]
+		isInfiltrator: false, alive: true, questGiver: true, inventory: [ITEMS.detector_goggles],
+		relationshipScore: 5, memories: []
 	},
 	student_alex: {
 		id: 'student_alex', name: 'Alex Kowalski',
 		description: 'A CS grad student who went into the steam tunnels on a dare and saw things. Now they sit at the Terrace all day, drinking Spotted Cow and drawing diagrams on napkins. The diagrams are disturbingly accurate.',
 		location: 'memorial_union', attitude: 'friendly',
 		dialogue: ['Steam tunnel layout', 'The signal', 'What they saw down there'],
-		isInfiltrator: false, alive: true, questGiver: false, inventory: []
+		isInfiltrator: false, alive: true, questGiver: false, inventory: [],
+		relationshipScore: 0, memories: []
 	},
 	mac_the_bartender: {
 		id: 'mac_the_bartender', name: 'Mac',
 		description: 'Owner of The Rigby. Vietnam vet, seen everything, believes everything. He knew something was wrong before anyone else because "the new people don\'t know how to play darts right." The Rigby is the resistance\'s safe house because infiltrators can\'t handle the vibe.',
 		location: 'the_rigby', attitude: 'friendly',
 		dialogue: ['The resistance', 'Supplies and weapons', 'War stories', 'Who\'s been replaced'],
-		isInfiltrator: false, alive: true, questGiver: true, inventory: [ITEMS.shotgun]
+		isInfiltrator: false, alive: true, questGiver: true, inventory: [ITEMS.shotgun],
+		relationshipScore: 20, memories: []
 	},
 	jenny_wu: {
 		id: 'jenny_wu', name: 'Jenny Wu',
 		description: 'Investigative reporter for the Isthmus who\'s been tracking disappearances. She has a map with red pins and connecting strings on the wall of The Rigby\'s back room. She\'s right about everything and nobody believes her.',
 		location: 'the_rigby', attitude: 'friendly',
 		dialogue: ['Disappearance patterns', 'The mayor\'s behavior', 'Garver Feed Mill activity'],
-		isInfiltrator: false, alive: true, questGiver: true, inventory: []
+		isInfiltrator: false, alive: true, questGiver: true, inventory: [],
+		relationshipScore: 10, memories: []
 	},
 	professor_chen_ghost: {
 		id: 'professor_chen_ghost', name: 'Dr. Wei Chen (Recording)',
 		description: 'A holographic recording left by a UW professor who discovered the steam tunnel modifications before disappearing. The recording loops, degrading each time. He\'s trying to explain how to shut down the signal antenna.',
 		location: 'steam_tunnel_lab', attitude: 'neutral',
 		dialogue: ['Antenna shutdown procedure', 'Warning about the signal', 'His own replacement'],
-		isInfiltrator: false, alive: false, questGiver: true, inventory: []
+		isInfiltrator: false, alive: false, questGiver: true, inventory: [],
+		relationshipScore: 0, memories: []
 	}
 };
 
@@ -423,6 +432,7 @@ export function createInitialWorld(): GameState {
 	return {
 		worldTime: '8:00 PM',
 		dayNumber: 1,
+		actionCounter: 0,
 		players: {},
 		locations: LOCATIONS,
 		npcs: NPCS,
@@ -453,4 +463,30 @@ export function createInitialWorld(): GameState {
 	};
 }
 
-export { ITEMS };
+// ── Encounter Tables ──────────────────────────────────────
+
+const ENCOUNTER_TABLES: Record<string, EncounterEntry[]> = {
+	outdoor: [
+		{ name: 'Infiltrator Patrol', type: 'combat', description: 'Two figures in matching business casual walk toward you in perfect lockstep. Their heads turn to track you simultaneously.', enemies: [{name: 'Infiltrator Scout', hp: 18, ac: 13, attackBonus: 3, damage: '1d6+2', xpValue: 100}], minDay: 2, weight: 3 },
+		{ name: 'Suspicious Stranger', type: 'social', description: 'Someone flags you down urgently. They look scared — or they\'re pretending to be.', weight: 4 },
+		{ name: 'Police Checkpoint', type: 'social', description: 'A squad car blocks the road ahead. Officer approaches.', minDay: 3, weight: 2 },
+		{ name: 'Supply Cache', type: 'loot', description: 'You spot a backpack wedged behind a dumpster. Someone stashed supplies here.', weight: 2 },
+		{ name: 'Nothing', type: 'none', description: '', weight: 8 }
+	],
+	indoor: [
+		{ name: 'Locked Door', type: 'skill', description: 'A door you haven\'t tried before. The lock looks pickable.', weight: 3 },
+		{ name: 'Nothing', type: 'none', description: '', weight: 7 }
+	],
+	dungeon: [
+		{ name: 'Drone Patrol', type: 'combat', description: 'A floating orb rounds the corner, red lens sweeping.', enemies: [{name: 'Patrol Drone', hp: 12, ac: 15, attackBonus: 4, damage: '1d8', xpValue: 80}], weight: 5 },
+		{ name: 'Trap', type: 'skill', description: 'You hear a faint click under your foot.', weight: 3 },
+		{ name: 'Nothing', type: 'none', description: '', weight: 4 }
+	],
+	underground: [
+		{ name: 'Tunnel Crawler', type: 'combat', description: 'Something skitters in the darkness ahead. Multiple legs.', enemies: [{name: 'Tunnel Crawler', hp: 18, ac: 13, attackBonus: 3, damage: '1d8+2', xpValue: 120}], weight: 4 },
+		{ name: 'Echoes', type: 'atmosphere', description: 'Strange sounds echo through the tunnels — almost like voices, but wrong.', weight: 4 },
+		{ name: 'Nothing', type: 'none', description: '', weight: 5 }
+	]
+};
+
+export { ITEMS, ENCOUNTER_TABLES };

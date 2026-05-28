@@ -8,18 +8,163 @@
 
 import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive } from './state';
 import * as dice from './dice';
-import { ITEMS } from '$lib/server/world/madison';
-import type { GameLogEntry, Character, GameState } from '$lib/types';
+import { ITEMS, ENCOUNTER_TABLES } from '$lib/server/world/madison';
+import type { GameLogEntry, Character, GameState, EncounterEntry } from '$lib/types';
 import { env } from '$env/dynamic/private';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
-const ANTHROPIC_KEY = env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || '';
+// SvelteKit's $env/dynamic/private sometimes fails to load .env vars after HMR.
+// Fallback: read .env directly from disk.
+let _cachedKey: string | null = null;
+function getApiKey(): string {
+	if (_cachedKey) return _cachedKey;
+	const key = env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || '';
+	if (key) { _cachedKey = key; return key; }
+	try {
+		const envFile = readFileSync(join(process.cwd(), '.env'), 'utf8');
+		const match = envFile.match(/ANTHROPIC_API_KEY=(.+)/);
+		if (match) {
+			const key2 = match[1].trim();
+			_cachedKey = key2;
+			console.log('[director] Loaded API key from .env file directly');
+			return key2;
+		}
+	} catch {}
+	console.error('[director] NO API KEY FOUND anywhere');
+	return '';
+}
 
 // ── Tool Definitions for Claude ────────────────────────────
+
+// ── Infiltrator Progression Gate ──────────────────────────
+// Controls how many NPCs can be infiltrators based on in-game day.
+// The Director can convert NPCs using the convert_npc tool, but
+// the code enforces the cap. Day 1 is slow — mostly normal.
+function getMaxInfiltrators(dayNumber: number): number {
+	//  Day 1: 1  — just Maya, everything's normal
+	//  Day 2: 1  — still quiet, maybe a weird vibe
+	//  Day 3: 2  — one more slips through
+	//  Day 4: 2  — tension building but nothing confirmed
+	//  Day 5: 3  — pattern starts to emerge
+	//  Day 6: 3  — the player should be getting suspicious
+	//  Day 7: 4  — okay something is definitely wrong
+	//  Day 8: 5  — acceleration begins
+	//  Day 9: 7  — hard to trust anyone
+	// Day 10+: 999 — floodgates, full invasion, shit hits the fan
+	const curve: Record<number, number> = {
+		1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3, 7: 4, 8: 5, 9: 7
+	};
+	return curve[dayNumber] ?? 999;
+}
+
+// ── Tool Enforcement ─────────────────────────────────────
+// Detects when the Director narrated state changes without calling the
+// corresponding tools. Returns a correction prompt or null.
+
+function detectMissedTools(narration: string, toolsCalled: string[]): string | null {
+	const text = narration.toLowerCase();
+	const missed: string[] = [];
+
+	// Item acquisition — player ACTUALLY receiving/taking items (not offers, descriptions, or mentioning existing gear)
+	if (!toolsCalled.includes('give_item')) {
+		const itemAcquirePattern = /\b(you (?:pick|grab|take|pocket|stow|tuck|clip|collect|loot)|(?:picked|grabbed|took|pocketed|stowed|tucked|clipped|collected|looted) (?:the|a|your|it|them)|hands? you (?:a|the|an)|gives? you (?:a|the|an)|slides? you (?:a|the|an)|(?:goes?|go) (?:in|into) your (?:pocket|bag|pack|belt|holster|jacket))\b/;
+		if (itemAcquirePattern.test(text)) {
+			missed.push('You described the player ACQUIRING items but did NOT call give_item. Items only exist in inventory if you call give_item. Call give_item NOW for EACH item acquired.');
+		}
+	}
+
+	// Item loss — player ACTUALLY dropping/losing items (not hypotheticals)
+	if (!toolsCalled.includes('remove_item')) {
+		const itemLossPattern = /\b(you (?:drop|throw|toss|discard|lose)|(?:dropped|threw|tossed|discarded|lost) (?:the|your|a))\b/;
+		if (itemLossPattern.test(text)) {
+			missed.push('You described the player LOSING or DROPPING items but did NOT call remove_item. Call remove_item for each item lost.');
+		}
+	}
+
+	// Healing — player ACTUALLY being healed (not mentioning items or offering aid)
+	if (!toolsCalled.includes('modify_hp')) {
+		const healPattern = /\b(you(?:'re| are) (?:healed|patched|bandaged|treated)|(?:patches|bandages|treats|heals) (?:you|your wound)|(?:your )?(?:wounds?|injuries?) (?:heal|close|mend)|(?:hp|health|hit points?) (?:restored|recovered|regained)|applies? (?:the |a )?(?:bandage|medkit|first aid) to (?:you|your))\b/;
+		if (healPattern.test(text)) {
+			missed.push('You described HEALING but did NOT call modify_hp. Call modify_hp with a POSITIVE amount.');
+		}
+	}
+
+	// Wealth changes — money ACTUALLY changing hands (not prices/menus/offers)
+	if (!toolsCalled.includes('modify_wealth')) {
+		const wealthPattern = /\b(you (?:pay|spend|hand over|slide|fork|pull|peel)|(?:paid|spent|handed over|forked over) \$|(?:costs?|charges?) you \$|you (?:buy|bought|purchase)|(?:a |the )(?:twenty|ten|five|fifty|hundred|bill|cash|money|dollar).*(?:across|over|on|to )|(?:from|out of) your (?:wallet|pocket|cash|money)|(?:slide|push|slap|toss|drop).*(?:\$|dollar|buck|twenty|ten|five|fifty|hundred|bill))\b/;
+		if (wealthPattern.test(text)) {
+			missed.push('You described a FINANCIAL transaction but did NOT call modify_wealth. Call modify_wealth to update the player\'s money.');
+		}
+	}
+
+	// Combat kills — narrated killing enemies without awarding XP
+	if (!toolsCalled.includes('award_xp')) {
+		const killPattern = /\b((?:drops?|falls?|collapses?|crumples?|slumps?|goes? down|goes? limp|hits? the (?:floor|ground|pavement|deck)|(?:is|are) dead|(?:dies?|killed?|slain|finished|dispatched|eliminated|neutralized|destroyed|defeated)))\b/;
+		if (killPattern.test(text)) {
+			missed.push('You described an enemy being KILLED or DEFEATED but did NOT call award_xp. Call award_xp NOW for each enemy killed. Use their xp_value from their stat block.');
+		}
+	}
+
+	// Good roleplay / clever solutions — if skill checks succeeded, award XP
+	if (!toolsCalled.includes('award_xp') && toolsCalled.includes('skill_check')) {
+		missed.push('A skill check was performed but no XP was awarded. Call award_xp with 10-25 XP for successful skill use, or 25-50 XP for clever/creative solutions.');
+	}
+
+	if (missed.length > 0) {
+		return '[SYSTEM — TOOL ENFORCEMENT]\n' +
+			missed.join('\n') +
+			'\n\nIMPORTANT: Do NOT output any text. Do NOT narrate. Do NOT explain yourself. ONLY call the missing tools. Any text you output will be discarded.';
+	}
+	return null;
+}
+
+function countInfiltrators(state: GameState): number {
+	return Object.values(state.npcs).filter(n => n.isInfiltrator && n.alive).length;
+}
+
+// ── Random Encounter Check ──────────────────────────────────
+function checkForEncounter(state: GameState, locationType: string, dangerLevel: number): EncounterEntry | null {
+	const table = ENCOUNTER_TABLES[locationType];
+	if (!table || table.length === 0) return null;
+
+	// dangerLevel 0 = no encounters ever
+	if (dangerLevel <= 0) return null;
+
+	// Encounter chance scales with danger: dangerLevel * 10%
+	const encounterChance = dangerLevel * 0.1;
+	if (Math.random() > encounterChance) return null;
+
+	// Filter entries by minDay requirement
+	let eligible = table.filter(entry => {
+		if (entry.minDay && state.dayNumber < entry.minDay) return false;
+		return true;
+	});
+
+	// In high-danger areas (7+), remove 'none' entries — always something happens
+	if (dangerLevel >= 7) {
+		eligible = eligible.filter(entry => entry.type !== 'none');
+	}
+
+	if (eligible.length === 0) return null;
+
+	// Weighted random selection
+	const totalWeight = eligible.reduce((sum, entry) => sum + entry.weight, 0);
+	let roll = Math.random() * totalWeight;
+	for (const entry of eligible) {
+		roll -= entry.weight;
+		if (roll <= 0) {
+			return entry.type === 'none' ? null : entry;
+		}
+	}
+
+	return null;
+}
 
 const TOOLS = [
 	{
 		name: 'roll_dice',
-		description: 'Roll dice using standard notation. Use for ALL randomness — attacks, skill checks, damage, saving throws, etc. Always show the roll result in your narration.',
+		description: 'Roll dice using standard notation for any random outcome.',
 		input_schema: {
 			type: 'object',
 			properties: {
@@ -31,7 +176,7 @@ const TOOLS = [
 	},
 	{
 		name: 'skill_check',
-		description: 'Perform a d20 skill check for a character. Automatically calculates modifiers.',
+		description: 'Perform a d20 skill check. Calculates modifiers automatically.',
 		input_schema: {
 			type: 'object',
 			properties: {
@@ -45,7 +190,7 @@ const TOOLS = [
 	},
 	{
 		name: 'attack',
-		description: 'Perform an attack roll and damage if it hits.',
+		description: 'Attack roll and damage calculation.',
 		input_schema: {
 			type: 'object',
 			properties: {
@@ -58,7 +203,7 @@ const TOOLS = [
 	},
 	{
 		name: 'modify_hp',
-		description: 'Heal or damage a character or enemy.',
+		description: 'Adjust HP. Positive heals, negative damages.',
 		input_schema: {
 			type: 'object',
 			properties: {
@@ -83,7 +228,7 @@ const TOOLS = [
 	},
 	{
 		name: 'give_item',
-		description: 'Add an item to a character\'s inventory. Use item_id for known items (pocket_knife, baseball_bat, pistol_9mm, shotgun, emp_grenade, first_aid_kit, leather_jacket, flashlight, cell_phone, cheese_curds, spotted_cow, detector_goggles). For ANY other item (loot, found objects, quest items, NPC gifts), you MUST provide name, description, and item_type to create it.',
+		description: 'Add an item to inventory. Use known item_id or provide name, description, and item_type for new items.',
 		input_schema: {
 			type: 'object',
 			properties: {
@@ -104,7 +249,7 @@ const TOOLS = [
 	},
 	{
 		name: 'remove_item',
-		description: 'Remove an item from a character\'s inventory.',
+		description: 'Remove an item from inventory.',
 		input_schema: {
 			type: 'object',
 			properties: {
@@ -116,7 +261,7 @@ const TOOLS = [
 	},
 	{
 		name: 'update_quest',
-		description: 'Update quest status or complete an objective.',
+		description: 'Update quest status.',
 		input_schema: {
 			type: 'object',
 			properties: {
@@ -129,7 +274,7 @@ const TOOLS = [
 	},
 	{
 		name: 'set_flag',
-		description: 'Set a global or location flag.',
+		description: 'Set a world state flag.',
 		input_schema: {
 			type: 'object',
 			properties: {
@@ -140,20 +285,40 @@ const TOOLS = [
 		}
 	},
 	{
+		name: 'spawn_enemy',
+		description: 'Create an enemy at a location. Must be called before start_combat or attack. Returns the enemy ID.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'Unique snake_case ID (e.g. "mac_infiltrator", "drone_1")' },
+				name: { type: 'string', description: 'Display name' },
+				description: { type: 'string', description: 'Brief description' },
+				type: { type: 'string', enum: ['infiltrator', 'drone', 'construct', 'boss', 'swarm'], description: 'Enemy type' },
+				hp: { type: 'number', description: 'Hit points (typically 10-30 for grunts, 50+ for bosses)' },
+				ac: { type: 'number', description: 'Armor class (typically 12-16)' },
+				attack_bonus: { type: 'number', description: 'Attack bonus (typically +3 to +6)' },
+				damage: { type: 'string', description: 'Damage expression (e.g. "1d6+2", "1d8+3")' },
+				xp_value: { type: 'number', description: 'XP awarded on kill (25-200)' },
+				location: { type: 'string', description: 'Location ID where this enemy is' }
+			},
+			required: ['id', 'name', 'type', 'hp', 'ac', 'attack_bonus', 'damage', 'xp_value', 'location']
+		}
+	},
+	{
 		name: 'start_combat',
-		description: 'Initiate combat between players at a location and enemies.',
+		description: 'Initiate combat at a location with previously spawned enemies.',
 		input_schema: {
 			type: 'object',
 			properties: {
 				location: { type: 'string', description: 'Location ID where combat occurs' },
-				enemy_ids: { type: 'array', items: { type: 'string' }, description: 'Enemy IDs joining combat' }
+				enemy_ids: { type: 'array', items: { type: 'string' }, description: 'Enemy IDs joining combat (must be spawned first)' }
 			},
 			required: ['location', 'enemy_ids']
 		}
 	},
 	{
 		name: 'end_combat',
-		description: 'End the current combat encounter.',
+		description: 'End combat.',
 		input_schema: {
 			type: 'object',
 			properties: {
@@ -161,15 +326,141 @@ const TOOLS = [
 			},
 			required: ['reason']
 		}
+	},
+	{
+		name: 'modify_inebriation',
+		description: 'Adjust inebriation (0=sober, 10=obliterated). +1 beer/shot, +2 cocktail/joint, +3 heavy dose.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				character_id: { type: 'string', description: 'Character ID' },
+				amount: { type: 'number', description: 'Positive to increase, negative to decrease' },
+				reason: { type: 'string', description: 'What they consumed or why it changed' }
+			},
+			required: ['character_id', 'amount', 'reason']
+		}
+	},
+	{
+		name: 'award_xp',
+		description: 'Award XP to a character.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				character_id: { type: 'string', description: 'Character receiving XP' },
+				amount: { type: 'number', description: 'XP to award (always positive)' },
+				reason: { type: 'string', description: 'Why they earned it' }
+			},
+			required: ['character_id', 'amount', 'reason']
+		}
+	},
+	{
+		name: 'modify_wealth',
+		description: 'Adjust money. Positive to gain, negative to spend.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				character_id: { type: 'string', description: 'Character ID' },
+				amount: { type: 'number', description: 'Positive to gain money, negative to spend' },
+				reason: { type: 'string', description: 'What the transaction was for' }
+			},
+			required: ['character_id', 'amount', 'reason']
+		}
+	},
+	{
+		name: 'convert_npc',
+		description: 'Mark an NPC as an infiltrator. Day-gated; will refuse if cap is reached.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				npc_id: { type: 'string', description: 'The ID of the NPC to convert' },
+				reason: { type: 'string', description: 'Narrative reason for the conversion (e.g. "replaced overnight", "was always an infiltrator")' }
+			},
+			required: ['npc_id']
+		}
+	},
+	{
+		name: 'stealth_check',
+		description: 'Opposed stealth check: Hide/Move Silently vs Spot/Listen. Adds "hidden" condition on success.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				character_id: { type: 'string', description: 'The character attempting stealth' },
+				opposing_id: { type: 'string', description: 'The enemy or NPC who might detect them' },
+				context: { type: 'string', description: 'What they\'re doing (e.g. "sneaking past guard", "hiding behind dumpster")' }
+			},
+			required: ['character_id', 'opposing_id', 'context']
+		}
+	},
+	{
+		name: 'modify_relationship',
+		description: 'Adjust an NPC\'s relationship with the player. Updates score, attitude, and adds a memory.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				npc_id: { type: 'string', description: 'The NPC whose relationship is changing' },
+				change: { type: 'number', description: 'Score adjustment, typically -20 to +20' },
+				reason: { type: 'string', description: 'What caused the change (e.g. "saved their life", "insulted them")' },
+				memory: { type: 'string', description: 'Short memory string the NPC retains (e.g. "Player fought off infiltrator in bar")' }
+			},
+			required: ['npc_id', 'change', 'reason', 'memory']
+		}
+	},
+	{
+		name: 'advance_time',
+		description: 'Advance in-game clock. Call when hours pass in the narrative (travel, searching, waiting). Crossing midnight increments the day and escalates the infiltrator threat.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				hours: { type: 'number', description: 'Hours to advance (typically 1-8)' },
+				reason: { type: 'string', description: 'Why time is passing (e.g. "traveling across town", "searching the building")' }
+			},
+			required: ['hours', 'reason']
+		}
+	},
+	{
+		name: 'rest',
+		description: 'Character rests and heals. Short rest = 1 hour, heals 1d4. Long rest = 8 hours, heals level x 1 HP, advances to next morning.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				character_id: { type: 'string', description: 'Character resting' },
+				rest_type: { type: 'string', enum: ['short', 'long'], description: 'Short (1hr, 1d4 HP) or long (8hr, full night, level x 1 HP)' }
+			},
+			required: ['character_id', 'rest_type']
+		}
+	},
+	{
+		name: 'start_romance',
+		description: 'Hand scene to the romance engine for any romantic/sexual interaction.',
+		input_schema: {
+			type: 'object',
+			properties: {
+				character_id: { type: 'string', description: 'The player character' },
+				npc_id: { type: 'string', description: 'The NPC being romanced — use their name in snake_case if no formal ID exists (e.g. "iris", "unit_7_gamma")' },
+				npc_name: { type: 'string', description: 'The NPC\'s display name (e.g. "Iris", "Unit 7-Gamma", "Jenny Wu")' },
+				context: { type: 'string', description: 'Describe the NPC in detail: their appearance, personality, species/nature (human, infiltrator, etc.), emotional state, and what they want. Then describe the setting, the mood, and what led to this moment. The romance engine has NO memory — this is all it knows.' }
+			},
+			required: ['character_id', 'npc_id', 'npc_name', 'context']
+		}
 	}
 ];
 
 // ── Tool Execution ─────────────────────────────────────────
 
-function executeTool(name: string, input: any, state: GameState): string {
+function executeTool(name: string, input: any, state: GameState, actingPlayerId?: string): string {
+	// God mode: override all dice rolls to nat 20
+	const isGodMode = actingPlayerId ? state.players[actingPlayerId]?.godMode === true : false;
+
 	switch (name) {
 		case 'roll_dice': {
 			const result = dice.roll(input.expression);
+			if (isGodMode) {
+				result.natural = 20;
+				result.rolls = [20];
+				result.total = 20 + result.modifier;
+				result.criticalHit = true;
+				result.criticalMiss = false;
+			}
 			return JSON.stringify({
 				expression: input.expression,
 				reason: input.reason,
@@ -188,6 +479,17 @@ function executeTool(name: string, input: any, state: GameState): string {
 			const skillRanks = char.skills[input.skill as keyof typeof char.skills] ?? 0;
 			const abilityMod = 0; // Simplified — director should know the modifier
 			const result = dice.skillCheck(skillRanks, abilityMod, input.dc);
+			if (isGodMode || char.godMode) {
+				result.roll.natural = 20;
+				result.roll.total = 20 + result.roll.modifier;
+				result.success = true;
+				result.margin = result.roll.total - input.dc;
+			}
+			// Track crit stats
+			if (char.stats) {
+				if (result.roll.natural === 20) char.stats.criticalHits++;
+				if (result.roll.natural === 1) char.stats.criticalFails++;
+			}
 			return JSON.stringify({
 				skill: input.skill,
 				dc: input.dc,
@@ -206,10 +508,31 @@ function executeTool(name: string, input: any, state: GameState): string {
 			const target = state.players[input.target_id] ?? state.enemies[input.target_id];
 			if (!attacker || !target) return JSON.stringify({ error: 'Attacker or target not found' });
 
-			const attackBonus = 'attackBonus' in attacker ? attacker.attackBonus : Math.floor((attacker.level ?? 1) / 2);
-			const targetAC = 'ac' in target ? target.ac : 10;
+			let attackBonus: number = 'attackBonus' in attacker ? (attacker as any).attackBonus : Math.floor(((attacker as any).level ?? 1) / 2);
+			let targetAC: number = 'ac' in target ? (target as any).ac : 10;
+
+			// Hidden attacker bonus: +2 attack, target loses Dex bonus to Defense
+			const attackerPlayer = state.players[input.attacker_id];
+			const attackerIsHidden = attackerPlayer?.conditions?.includes('hidden') ?? false;
+			if (attackerIsHidden) {
+				attackBonus += 2;
+				// Target is flat-footed (loses Dex bonus to Defense)
+				const targetEntity = state.players[input.target_id] ?? state.enemies[input.target_id];
+				if (targetEntity && 'abilities' in targetEntity) {
+					const targetDexMod = dice.abilityModifier((targetEntity.abilities as any)?.DEX ?? 10);
+					if (targetDexMod > 0) {
+						targetAC -= targetDexMod;
+					}
+				}
+			}
 
 			const result = dice.attackRoll(attackBonus, targetAC);
+			if (isGodMode || (state.players[input.attacker_id]?.godMode)) {
+				result.roll.natural = 20;
+				result.roll.total = 20 + attackBonus;
+				result.hit = true;
+				result.critical = true;
+			}
 			let damageResult = null;
 
 			if (result.hit) {
@@ -218,13 +541,66 @@ function executeTool(name: string, input: any, state: GameState): string {
 					: '1d4';
 				damageResult = dice.rollDamage(damageExpr, result.critical);
 
-				// Apply damage
+				// Apply damage — d20 Modern death rules:
+				//   0 HP = DISABLED, -1 to -9 = DYING, -10 = DEAD
 				if ('hp' in target) {
-					(target as any).hp = Math.max(0, (target as any).hp - damageResult.total);
-					if ((target as any).hp <= 0) {
+					(target as any).hp = Math.min((target as any).maxHp ?? 999, (target as any).hp - damageResult.total);
+					if ((target as any).hp <= -10) {
 						(target as any).alive = false;
+					} else if ((target as any).hp <= 0) {
+						// Dying or disabled — add condition, NOT dead yet
+						const conditions: string[] = (target as any).conditions ?? [];
+						if ((target as any).hp === 0 && !conditions.includes('disabled')) {
+							conditions.push('disabled');
+						} else if ((target as any).hp < 0 && !conditions.includes('dying')) {
+							// Remove disabled if they had it, add dying
+							const idx = conditions.indexOf('disabled');
+							if (idx !== -1) conditions.splice(idx, 1);
+							conditions.push('dying');
+						}
+						(target as any).conditions = conditions;
 					}
 				}
+
+				// Track stats
+				const atkPlayer = state.players[input.attacker_id];
+				const targetPlayer = state.players[input.target_id];
+				if (atkPlayer?.stats) {
+					atkPlayer.stats.damageDealt += damageResult.total;
+					if (result.critical) atkPlayer.stats.criticalHits++;
+					if ((target as any).hp <= -10 && !(target as any).alive) {
+						atkPlayer.stats.enemiesKilled++;
+						// Auto-award XP on kill — don't rely on the Director
+						const xpValue = (target as any).xpValue ?? 50;
+						atkPlayer.xp += xpValue;
+						console.log(`[director] 🏆 Auto-awarded ${xpValue} XP to ${atkPlayer.name} for killing ${(target as any).name}`);
+						// Check for level up (every 1000 XP)
+						const newLevel = Math.floor(atkPlayer.xp / 1000) + 1;
+						if (newLevel > atkPlayer.level) {
+							atkPlayer.level = newLevel;
+							const conMod = Math.floor((atkPlayer.abilities.CON - 10) / 2);
+							const hitDieRoll = Math.floor(Math.random() * 6) + 1; // 1d6 base
+							const hpGain = Math.max(1, hitDieRoll + conMod);
+							atkPlayer.maxHp += hpGain;
+							atkPlayer.hp += hpGain;
+							addLogEntry({
+								timestamp: new Date().toISOString(),
+								type: 'system',
+								text: `⚡ ${atkPlayer.name} reached LEVEL ${newLevel}! +${hpGain} HP (${atkPlayer.hp}/${atkPlayer.maxHp})`
+							});
+						}
+					}
+				}
+				if (targetPlayer?.stats) {
+					targetPlayer.stats.damageTaken += damageResult.total;
+				}
+
+				saveState();
+			}
+
+			// Remove hidden condition after attacking (attacker is revealed)
+			if (attackerIsHidden && attackerPlayer) {
+				attackerPlayer.conditions = attackerPlayer.conditions.filter(c => c !== 'hidden');
 				saveState();
 			}
 
@@ -239,7 +615,8 @@ function executeTool(name: string, input: any, state: GameState): string {
 				damage: damageResult?.total ?? 0,
 				damageRolls: damageResult?.rolls ?? [],
 				targetHp: (target as any).hp ?? 0,
-				targetAlive: (target as any).alive ?? true
+				targetAlive: (target as any).alive ?? true,
+				...(attackerIsHidden ? { surprise: true, stealthBonus: '+2 attack, target flat-footed' } : {})
 			});
 		}
 
@@ -247,10 +624,41 @@ function executeTool(name: string, input: any, state: GameState): string {
 			const target = state.players[input.target_id] ?? state.enemies[input.target_id];
 			if (!target) return JSON.stringify({ error: 'Target not found' });
 			const oldHp = (target as any).hp;
-			(target as any).hp = Math.max(0, Math.min((target as any).maxHp, oldHp + input.amount));
-			if ((target as any).hp <= 0) (target as any).alive = false;
+			// d20 Modern: HP can go negative. 0 = DISABLED, -1 to -9 = DYING, -10 = DEAD.
+			// Healing (positive amount) caps at maxHp. Damage (negative) has no floor.
+			const newHp = input.amount > 0
+				? Math.min((target as any).maxHp, oldHp + input.amount)
+				: oldHp + input.amount;
+			(target as any).hp = newHp;
+
+			if (newHp <= -10) {
+				(target as any).alive = false;
+			} else if (newHp <= 0) {
+				// Dying or disabled — track condition
+				const conditions: string[] = (target as any).conditions ?? [];
+				if (newHp === 0 && !conditions.includes('disabled')) {
+					// Remove dying if healed to exactly 0
+					const dyingIdx = conditions.indexOf('dying');
+					if (dyingIdx !== -1) conditions.splice(dyingIdx, 1);
+					conditions.push('disabled');
+				} else if (newHp < 0 && !conditions.includes('dying')) {
+					const disIdx = conditions.indexOf('disabled');
+					if (disIdx !== -1) conditions.splice(disIdx, 1);
+					conditions.push('dying');
+				}
+				(target as any).conditions = conditions;
+			} else {
+				// HP > 0 — remove dying/disabled if present (healed back up)
+				const conditions: string[] = (target as any).conditions ?? [];
+				const dyingIdx = conditions.indexOf('dying');
+				if (dyingIdx !== -1) conditions.splice(dyingIdx, 1);
+				const disIdx = conditions.indexOf('disabled');
+				if (disIdx !== -1) conditions.splice(disIdx, 1);
+				(target as any).conditions = conditions;
+			}
+
 			saveState();
-			return JSON.stringify({ target: input.target_id, oldHp, newHp: (target as any).hp, reason: input.reason });
+			return JSON.stringify({ target: input.target_id, oldHp, newHp, reason: input.reason });
 		}
 
 		case 'move_character': {
@@ -265,7 +673,8 @@ function executeTool(name: string, input: any, state: GameState): string {
 			char.location = input.destination;
 			destLoc.discovered = true;
 			saveState();
-			return JSON.stringify({
+
+			const moveResult: Record<string, any> = {
 				character: char.name,
 				from: currentLoc.name,
 				to: destLoc.name,
@@ -273,17 +682,76 @@ function executeTool(name: string, input: any, state: GameState): string {
 				npcsHere: destLoc.npcs.map(id => state.npcs[id]?.name).filter(Boolean),
 				enemiesHere: destLoc.enemies.map(id => state.enemies[id]).filter(e => e?.alive).map(e => e.name),
 				itemsHere: destLoc.items
-			});
+			};
+
+			// ── Random encounter check ──
+			const encounter = checkForEncounter(state, destLoc.type, destLoc.dangerLevel);
+			if (encounter) {
+				moveResult.encounter = {
+					name: encounter.name,
+					type: encounter.type,
+					description: encounter.description
+				};
+
+				if (encounter.type === 'combat' && encounter.enemies) {
+					// Auto-spawn enemies from the encounter table
+					const spawnedIds: string[] = [];
+					const enemyTemplates = encounter.enemies;
+					for (let i = 0; i < enemyTemplates.length; i++) {
+						const template = enemyTemplates[i];
+						const enemyId = `enc_${template.name.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}_${i}`;
+						const enemy = {
+							id: enemyId,
+							name: template.name,
+							description: encounter.description,
+							type: 'infiltrator' as const,
+							hp: template.hp,
+							maxHp: template.hp,
+							ac: template.ac,
+							attackBonus: template.attackBonus,
+							damage: template.damage,
+							abilities: {},
+							skills: {},
+							xpValue: template.xpValue,
+							loot: [],
+							special: [],
+							alive: true
+						};
+						state.enemies[enemyId] = enemy as any;
+						if (!destLoc.enemies.includes(enemyId)) {
+							destLoc.enemies.push(enemyId);
+						}
+						spawnedIds.push(enemyId);
+					}
+					saveState();
+					moveResult.encounter.spawnedEnemyIds = spawnedIds;
+					moveResult.encounter.combatReady = true;
+				}
+			}
+
+			return JSON.stringify(moveResult);
 		}
 
 		case 'give_item': {
 			const char = state.players[input.character_id];
 			if (!char) return JSON.stringify({ error: 'Character not found' });
 
+			// Guard: only give items if the player explicitly asked to pick up / take / grab something.
+			// The Director loves auto-looting cheese curds and flashlights. No.
+			if (_lastPlayerAction) {
+				const pickupWords = /\b(pick up|pick it up|grab|take|pocket|stow|loot|collect|get the|get it|snag|nab|scoop|swipe|yoink|claim|keep it|put .* in .* (?:bag|pocket|pack|inventory)|equip)\b/i;
+				// Allow: NPC handing player something as quest reward, or buying something
+				const receiveWords = /\b(buy|purchase|accept|receive|order)\b/i;
+				if (!pickupWords.test(_lastPlayerAction) && !receiveWords.test(_lastPlayerAction)) {
+					return JSON.stringify({ error: 'Player did not ask to pick up or take this item. Describe items in the environment but do NOT add them to inventory unless the player explicitly picks them up.' });
+				}
+			}
+
 			// Check known items first
 			const knownItem = ITEMS[input.item_id];
 			if (knownItem) {
 				char.inventory.push({ ...knownItem });
+				if (char.stats) char.stats.itemsFound++;
 				const loc = state.locations[char.location];
 				if (loc) {
 					loc.items = loc.items.filter(i => i !== input.item_id);
@@ -309,6 +777,7 @@ function executeTool(name: string, input: any, state: GameState): string {
 					critMultiplier: 2
 				};
 				char.inventory.push(newItem as any);
+				if (char.stats) char.stats.itemsFound++;
 				saveState();
 				return JSON.stringify({ character: char.name, item: newItem.name, action: 'created and received' });
 			}
@@ -349,6 +818,34 @@ function executeTool(name: string, input: any, state: GameState): string {
 			return JSON.stringify({ flag: input.flag, value: input.value });
 		}
 
+		case 'spawn_enemy': {
+			const enemy = {
+				id: input.id,
+				name: input.name,
+				description: input.description ?? '',
+				type: input.type,
+				hp: input.hp,
+				maxHp: input.hp,
+				ac: input.ac,
+				attackBonus: input.attack_bonus,
+				damage: input.damage,
+				abilities: {},
+				skills: {},
+				xpValue: input.xp_value,
+				loot: [],
+				special: [],
+				alive: true
+			};
+			state.enemies[input.id] = enemy as any;
+			// Add to location's enemy list
+			const loc = state.locations[input.location];
+			if (loc && !loc.enemies.includes(input.id)) {
+				loc.enemies.push(input.id);
+			}
+			saveState();
+			return JSON.stringify({ spawned: input.id, name: input.name, hp: input.hp, ac: input.ac });
+		}
+
 		case 'start_combat': {
 			const players = getPlayersAtLocation(input.location);
 			const enemies = input.enemy_ids.map((id: string) => state.enemies[id]).filter(Boolean);
@@ -385,6 +882,413 @@ function executeTool(name: string, input: any, state: GameState): string {
 			return JSON.stringify({ combat: 'ended', reason: input.reason });
 		}
 
+		case 'modify_inebriation': {
+			const char = state.players[input.character_id];
+			if (!char) return JSON.stringify({ error: 'Character not found' });
+
+			// Guard: only increase inebriation if the player actually CONSUMED something.
+			// "Order a drink" ≠ drinking it. They need to drink/sip/chug/have/down it.
+			if (input.amount > 0 && _lastPlayerAction) {
+				const consumeWords = /\b(drink|chug|sip|down|slam|knock back|have a|have an|have the|have some|having a|grab a|grab an|take a sip|take a drink|take a shot|take a hit|take a pull|pound|guzzle|nurse|finish|consume|smoke|toke|hit the|puff)\b/i;
+				if (!consumeWords.test(_lastPlayerAction)) {
+					return JSON.stringify({ error: 'Player did not consume a drink or substance — they may have only ordered it. Do not add inebriation until the player actually drinks/consumes. Narrate the drink being served instead.' });
+				}
+			}
+
+			const oldLevel = char.inebriation ?? 0;
+			char.inebriation = Math.max(0, Math.min(10, oldLevel + input.amount));
+			if (input.amount > 0 && char.stats) char.stats.drinksConsumed++;
+			saveState();
+			return JSON.stringify({
+				character: char.name,
+				oldLevel,
+				newLevel: char.inebriation,
+				reason: input.reason
+			});
+		}
+
+		case 'award_xp': {
+			const char = state.players[input.character_id];
+			if (!char) return JSON.stringify({ error: 'Character not found' });
+			const oldXp = char.xp;
+			char.xp += Math.max(0, input.amount);
+			// Level up check — d20 Modern: 1000 XP per level
+			const oldLevel = char.level;
+			const newLevel = Math.floor(char.xp / 1000) + 1;
+			if (newLevel > char.level) {
+				char.level = newLevel;
+				// HP increase on level up
+				const conMod = Math.floor((char.abilities.CON - 10) / 2);
+				const hitDie = { 'Strong Hero': 8, 'Fast Hero': 8, 'Tough Hero': 10, 'Smart Hero': 6, 'Dedicated Hero': 6, 'Charismatic Hero': 6 }[char.class] ?? 6;
+				const hpGain = Math.max(1, Math.floor(hitDie / 2) + 1 + conMod);
+				char.maxHp += hpGain;
+				char.hp += hpGain;
+			}
+			saveState();
+			return JSON.stringify({
+				character: char.name,
+				xpGained: input.amount,
+				totalXp: char.xp,
+				reason: input.reason,
+				...(newLevel > oldLevel ? { levelUp: true, newLevel, message: `${char.name} leveled up to ${newLevel}!` } : {})
+			});
+		}
+
+		case 'modify_wealth': {
+			const char = state.players[input.character_id];
+			if (!char) return JSON.stringify({ error: 'Character not found' });
+
+			// Guard: only ADD money if the player explicitly picked it up or is being paid/rewarded.
+			// Spending (negative amount) always allowed — that's the player choosing to pay.
+			if (input.amount > 0 && _lastPlayerAction) {
+				const moneyPickupWords = /\b(pick up|grab|take|pocket|collect|loot|keep|accept|receive|pick .* up)\b/i;
+				const earnWords = /\b(sell|work|earn|reward|pay me|tip|bet|win|hustle)\b/i;
+				if (!moneyPickupWords.test(_lastPlayerAction) && !earnWords.test(_lastPlayerAction)) {
+					return JSON.stringify({ error: 'Player did not ask to pick up or collect this money. Describe money in the environment but do NOT add it to their wealth unless they explicitly take it.' });
+				}
+			}
+
+			if (!char.stats) char.stats = { enemiesKilled: 0, damageDealt: 0, damageTaken: 0, moneyEarned: 0, moneySpent: 0, drinksConsumed: 0, itemsFound: 0, criticalHits: 0, criticalFails: 0, romances: 0, actionsPerformed: 0 };
+			const oldWealth = char.wealth;
+			char.wealth = Math.max(0, oldWealth + input.amount);
+			if (input.amount > 0) char.stats.moneyEarned += input.amount;
+			if (input.amount < 0) char.stats.moneySpent += Math.abs(input.amount);
+			saveState();
+			return JSON.stringify({
+				character: char.name,
+				oldWealth,
+				newWealth: char.wealth,
+				change: input.amount,
+				reason: input.reason
+			});
+		}
+
+		case 'convert_npc': {
+			const npc = state.npcs[input.npc_id];
+			if (!npc) return JSON.stringify({ error: `NPC '${input.npc_id}' not found. Available NPCs: ${Object.keys(state.npcs).join(', ')}` });
+			if (npc.isInfiltrator) return JSON.stringify({ status: 'already_infiltrator', npc: npc.name, message: `${npc.name} is already an infiltrator.` });
+
+			const maxAllowed = getMaxInfiltrators(state.dayNumber);
+			const currentCount = countInfiltrators(state);
+			if (currentCount >= maxAllowed) {
+				return JSON.stringify({
+					error: 'infiltrator_cap_reached',
+					currentDay: state.dayNumber,
+					maxInfiltrators: maxAllowed,
+					currentInfiltrators: currentCount,
+					message: `Cannot convert ${npc.name} — the infiltrator cap for Day ${state.dayNumber} is ${maxAllowed}, and ${currentCount} NPCs are already infiltrators. The invasion hasn't spread this far yet. Play it human.`
+				});
+			}
+
+			npc.isInfiltrator = true;
+			npc.attitude = 'neutral';
+			saveState();
+			return JSON.stringify({
+				status: 'converted',
+				npc: npc.name,
+				npc_id: npc.id,
+				reason: input.reason || 'replaced by infiltrator',
+				currentDay: state.dayNumber,
+				infiltratorCount: currentCount + 1,
+				maxInfiltrators: maxAllowed
+			});
+		}
+
+		case 'stealth_check': {
+			const char = state.players[input.character_id];
+			if (!char) return JSON.stringify({ error: 'Character not found' });
+
+			const opponent = state.enemies[input.opposing_id] ?? state.npcs[input.opposing_id];
+			if (!opponent) return JSON.stringify({ error: 'Opposing entity not found' });
+
+			// Character stealth: higher of Hide or Move Silently, + Dex mod
+			const hideRanks = char.skills['Hide'] ?? 0;
+			const moveSilentRanks = char.skills['Move Silently'] ?? 0;
+			const stealthRanks = Math.max(hideRanks, moveSilentRanks);
+			const dexMod = dice.abilityModifier(char.abilities.DEX);
+			let stealthMod = stealthRanks + dexMod;
+
+			// Inebriation penalty: -2 per level
+			const inebriationPenalty = (char.inebriation ?? 0) * -2;
+			stealthMod += inebriationPenalty;
+
+			// Darkness bonus: +2 if location is underground or dungeon type
+			const loc = state.locations[char.location];
+			const darknessBonus = (loc?.type === 'underground' || loc?.type === 'dungeon') ? 2 : 0;
+			stealthMod += darknessBonus;
+
+			// Opponent perception: higher of Spot or Listen, default +2
+			const opponentSkills = opponent.skills ?? {};
+			const spotRanks = opponentSkills['Spot'] ?? 0;
+			const listenRanks = opponentSkills['Listen'] ?? 0;
+			const perceptionRanks = Math.max(spotRanks, listenRanks);
+			const perceptionMod = perceptionRanks > 0 ? perceptionRanks : 2;
+
+			// Roll opposed checks
+			const stealthRoll = dice.roll('1d20');
+			const perceptionRoll = dice.roll('1d20');
+
+			if (isGodMode || char.godMode) {
+				stealthRoll.natural = 20;
+				stealthRoll.rolls = [20];
+				stealthRoll.total = 20;
+			}
+
+			const stealthTotal = stealthRoll.natural + stealthMod;
+			const perceptionTotal = perceptionRoll.natural + perceptionMod;
+			const success = stealthTotal >= perceptionTotal;
+
+			if (success) {
+				if (!char.conditions.includes('hidden')) {
+					char.conditions.push('hidden');
+				}
+			}
+
+			// Track crit stats
+			if (char.stats) {
+				if (stealthRoll.natural === 20) char.stats.criticalHits++;
+				if (stealthRoll.natural === 1) char.stats.criticalFails++;
+			}
+
+			saveState();
+			return JSON.stringify({
+				context: input.context,
+				stealth: {
+					roll: stealthRoll.natural,
+					skillBonus: stealthRanks,
+					dexMod,
+					inebriationPenalty: inebriationPenalty !== 0 ? inebriationPenalty : undefined,
+					darknessBonus: darknessBonus !== 0 ? darknessBonus : undefined,
+					totalModifier: stealthMod,
+					total: stealthTotal
+				},
+				perception: {
+					roll: perceptionRoll.natural,
+					modifier: perceptionMod,
+					total: perceptionTotal
+				},
+				success,
+				result: success
+					? `${char.name} is now hidden. (${stealthTotal} vs ${perceptionTotal})`
+					: `${char.name} was detected! (${stealthTotal} vs ${perceptionTotal})`,
+				hidden: success
+			});
+		}
+
+		case 'modify_relationship': {
+			const npc = state.npcs[input.npc_id];
+			if (!npc) return JSON.stringify({ error: `NPC '${input.npc_id}' not found. Available NPCs: ${Object.keys(state.npcs).join(', ')}` });
+
+			const oldScore = npc.relationshipScore ?? 0;
+			const oldAttitude = npc.attitude;
+
+			// Clamp score to -100/+100
+			npc.relationshipScore = Math.max(-100, Math.min(100, oldScore + input.change));
+
+			// Push memory, cap at 10 (drop oldest)
+			if (!npc.memories) npc.memories = [];
+			npc.memories.push(input.memory);
+			if (npc.memories.length > 10) {
+				npc.memories = npc.memories.slice(-10);
+			}
+
+			// Auto-update attitude based on score
+			if (npc.relationshipScore < -50) {
+				npc.attitude = 'hostile';
+			} else if (npc.relationshipScore < -10) {
+				npc.attitude = 'suspicious';
+			} else if (npc.relationshipScore <= 20) {
+				npc.attitude = 'neutral';
+			} else {
+				npc.attitude = 'friendly';
+			}
+
+			saveState();
+
+			const attitudeChanged = oldAttitude !== npc.attitude;
+			return JSON.stringify({
+				npc: npc.name,
+				npc_id: npc.id,
+				oldScore,
+				newScore: npc.relationshipScore,
+				change: input.change,
+				reason: input.reason,
+				memory: input.memory,
+				attitude: npc.attitude,
+				...(attitudeChanged ? { attitudeChanged: true, oldAttitude, note: `${npc.name}'s demeanor shifted from ${oldAttitude} to ${npc.attitude}` } : {})
+			});
+		}
+
+		case 'advance_time': {
+			// Parse current time like "8:00 PM"
+			const timeMatch = state.worldTime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+			if (!timeMatch) return JSON.stringify({ error: 'Could not parse worldTime: ' + state.worldTime });
+			let hour24 = parseInt(timeMatch[1]);
+			const minutes = parseInt(timeMatch[2]);
+			const ampm = timeMatch[3].toUpperCase();
+			// Convert to 24h
+			if (ampm === 'AM' && hour24 === 12) hour24 = 0;
+			else if (ampm === 'PM' && hour24 !== 12) hour24 += 12;
+
+			const oldDay = state.dayNumber;
+			let totalHours = hour24 + input.hours;
+			const daysAdvanced = Math.floor(totalHours / 24);
+			totalHours = totalHours % 24;
+
+			// Convert back to 12h format
+			const newAmpm = totalHours >= 12 ? 'PM' : 'AM';
+			let newHour12 = totalHours % 12;
+			if (newHour12 === 0) newHour12 = 12;
+			const newTimeStr = newHour12 + ':' + String(minutes).padStart(2, '0') + ' ' + newAmpm;
+
+			state.worldTime = newTimeStr;
+			state.dayNumber += daysAdvanced;
+
+			// Log day transitions
+			if (state.dayNumber > oldDay) {
+				for (let d = oldDay + 1; d <= state.dayNumber; d++) {
+					const dayMsg: GameLogEntry = {
+						timestamp: new Date().toISOString(),
+						type: 'system',
+						text: '[DAY ' + d + ' BEGINS] The sun rises over Madison. The city feels different today.'
+					};
+					addLogEntry(dayMsg);
+				}
+			}
+
+			saveState();
+			return JSON.stringify({
+				oldTime: timeMatch[0],
+				newTime: newTimeStr,
+				oldDay: oldDay,
+				newDay: state.dayNumber,
+				hoursAdvanced: input.hours,
+				reason: input.reason,
+				...(state.dayNumber > oldDay ? { dayAdvanced: true, newInfiltratorCap: getMaxInfiltrators(state.dayNumber) } : {})
+			});
+		}
+
+		case 'rest': {
+			const char = state.players[input.character_id];
+			if (!char) return JSON.stringify({ error: 'Character not found' });
+			if (!char.alive) return JSON.stringify({ error: char.name + ' is dead and cannot rest.' });
+			if (state.combat.active) return JSON.stringify({ error: 'Cannot rest during combat!' });
+
+			let hoursRested: number;
+			let healed: number;
+
+			if (input.rest_type === 'short') {
+				// Short rest: 1 hour, heal 1d4
+				hoursRested = 1;
+				const healRoll = dice.roll('1d4');
+				healed = healRoll.total;
+			} else {
+				// Long rest: 8 hours, heal level x 1 HP, advance to next morning
+				hoursRested = 8;
+				healed = char.level;
+
+				// Long rest advances to next morning (6:00 AM)
+				const timeMatch = state.worldTime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+				if (timeMatch) {
+					let hour24 = parseInt(timeMatch[1]);
+					const ampm = timeMatch[3].toUpperCase();
+					if (ampm === 'AM' && hour24 === 12) hour24 = 0;
+					else if (ampm === 'PM' && hour24 !== 12) hour24 += 12;
+
+					// If it's past 6 AM, we go to 6 AM NEXT day. If before 6 AM, just go to 6 AM same day.
+					if (hour24 >= 6) {
+						state.dayNumber++;
+					}
+					state.worldTime = '6:00 AM';
+
+					const dayMsg: GameLogEntry = {
+						timestamp: new Date().toISOString(),
+						type: 'system',
+						text: '[DAY ' + state.dayNumber + ' BEGINS] The sun rises over Madison. The city feels different today.'
+					};
+					addLogEntry(dayMsg);
+				}
+			}
+
+			// Apply healing
+			const oldHp = char.hp;
+			char.hp = Math.min(char.maxHp, char.hp + healed);
+
+			// If short rest, also advance time normally
+			if (input.rest_type === 'short') {
+				const timeMatch = state.worldTime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+				if (timeMatch) {
+					let hour24 = parseInt(timeMatch[1]);
+					const minutes = parseInt(timeMatch[2]);
+					const ampm = timeMatch[3].toUpperCase();
+					if (ampm === 'AM' && hour24 === 12) hour24 = 0;
+					else if (ampm === 'PM' && hour24 !== 12) hour24 += 12;
+					const oldDay = state.dayNumber;
+					let totalHours = hour24 + hoursRested;
+					const daysAdv = Math.floor(totalHours / 24);
+					totalHours = totalHours % 24;
+					const newAmpm = totalHours >= 12 ? 'PM' : 'AM';
+					let newHour12 = totalHours % 12;
+					if (newHour12 === 0) newHour12 = 12;
+					state.worldTime = newHour12 + ':' + String(minutes).padStart(2, '0') + ' ' + newAmpm;
+					state.dayNumber += daysAdv;
+					if (state.dayNumber > oldDay) {
+						const dayMsg2: GameLogEntry = {
+							timestamp: new Date().toISOString(),
+							type: 'system',
+							text: '[DAY ' + state.dayNumber + ' BEGINS] The sun rises over Madison. The city feels different today.'
+						};
+						addLogEntry(dayMsg2);
+					}
+				}
+			}
+
+			saveState();
+			return JSON.stringify({
+				character: char.name,
+				restType: input.rest_type,
+				hoursRested,
+				oldHp,
+				newHp: char.hp,
+				healed,
+				newTime: state.worldTime,
+				newDay: state.dayNumber
+			});
+		}
+
+
+		case 'start_romance': {
+			const char = state.players[input.character_id];
+			if (!char) return JSON.stringify({ error: 'Character not found' });
+
+			// Guard: only start romance if the player explicitly made a romantic/sexual advance.
+			if (_lastPlayerAction) {
+				const romanceWords = /\b(flirt|kiss|seduc|hit on|make a move|come on to|romance|hookup|hook up|sleep with|take .* to bed|get .* alone|wink|caress|embrace|lean in|makeout|make out|intimate|attracted|sexy|cuddle|hold .* hand|ask .* out|charm)\b/i;
+				if (!romanceWords.test(_lastPlayerAction)) {
+					return JSON.stringify({ error: 'Player did not initiate a romantic or sexual advance. Do NOT start romance unprompted.' });
+				}
+			}
+
+			const displayName = input.npc_name || state.npcs[input.npc_id]?.name || input.npc_id.replace(/_/g, ' ');
+			char.romanceMode = true;
+			char.romanceNpc = displayName;
+			char.romanceContext = input.context;
+			if (char.stats) char.stats.romances++;
+			saveState();
+			// Drop a marker so processRomanceAction can build conversation history
+			addLogEntry({
+				timestamp: new Date().toISOString(),
+				type: 'system',
+				text: `[ROMANCE STARTED] ${char.name} and ${displayName}`
+			});
+			return JSON.stringify({
+				status: 'romance_started',
+				character: char.name,
+				npc: displayName,
+				context: input.context
+			});
+		}
+
 		default:
 			return JSON.stringify({ error: `Unknown tool: ${name}` });
 	}
@@ -401,10 +1305,20 @@ function formatPlayerList(state: GameState): string {
 	}).join('; ');
 }
 
-function formatLocations(state: GameState): string {
+function formatLocations(state: GameState, currentLocationId?: string): string {
+	if (!currentLocationId) {
+		// Fallback: all discovered (original behavior)
+		return Object.values(state.locations)
+			.filter(l => l.discovered)
+			.map(l => '- ' + l.name + ' (' + l.id + '): connects to [' + l.connections.join(', ') + ']')
+			.join('\n');
+	}
+	const current = state.locations[currentLocationId];
+	if (!current) return 'Unknown location';
+	const nearbyIds = new Set([currentLocationId, ...current.connections]);
 	return Object.values(state.locations)
-		.filter(l => l.discovered)
-		.map(l => '- ' + l.name + ' (' + l.id + '): connects to [' + l.connections.join(', ') + ']')
+		.filter(l => nearbyIds.has(l.id))
+		.map(l => '- ' + l.name + ' (' + l.id + ')' + (l.id === currentLocationId ? ' [CURRENT]' : '') + ': connects to [' + l.connections.join(', ') + ']')
 		.join('\n');
 }
 
@@ -417,72 +1331,343 @@ function formatQuests(state: GameState): string {
 	}).join('\n');
 }
 
-function formatNPCs(state: GameState): string {
+function formatRelationship(n: import('$lib/types').NPC): string {
+	const score = n.relationshipScore ?? 0;
+	const scoreStr = score >= 0 ? `+${score}` : `${score}`;
+	const recentMemories = (n.memories ?? []).slice(-3);
+	const memStr = recentMemories.length > 0 ? ` | Memories: ${recentMemories.map(m => `"${m}"`).join(', ')}` : '';
+	return `, ${scoreStr}${memStr}`;
+}
+
+function formatNPCs(state: GameState, playerLocationId?: string): string {
+	if (!playerLocationId) {
+		// Fallback: all alive NPCs (original behavior)
+		return Object.values(state.npcs)
+			.filter(n => n.alive)
+			.map(n => {
+				const locName = state.locations[n.location]?.name ?? 'unknown';
+				const status = n.isInfiltrator ? '⚠️ INFILTRATOR' : '✓ HUMAN';
+				const rel = formatRelationship(n);
+				return `- ${n.name} [${n.id}] at ${locName} (${n.attitude}${rel}) — ${status}`;
+			})
+			.join('\n');
+	}
+	// Collect NPC IDs that are quest givers for active quests
+	const questGiverIds = new Set(
+		Object.values(state.quests)
+			.filter(q => q.status === 'active')
+			.map(q => q.giver)
+	);
 	return Object.values(state.npcs)
-		.filter(n => n.alive)
+		.filter(n => n.alive && (n.location === playerLocationId || questGiverIds.has(n.id)))
 		.map(n => {
 			const locName = state.locations[n.location]?.name ?? 'unknown';
-			const infil = n.isInfiltrator ? ', INFILTRATOR' : '';
-			return '- ' + n.name + ' at ' + locName + ' (' + n.attitude + infil + ')';
+			const status = n.isInfiltrator ? '⚠️ INFILTRATOR' : '✓ HUMAN';
+			const tag = n.location === playerLocationId ? '' : ' [QUEST GIVER]';
+			const rel = formatRelationship(n);
+			return `- ${n.name} [${n.id}] at ${locName} (${n.attitude}${rel}) — ${status}${tag}`;
 		})
 		.join('\n');
 }
 
-function buildSystemPrompt(state: GameState): string {
+// ── Static Rules (CACHED — computed once at module load) ──────
+// This block is identical across ALL requests. By isolating it from
+// dynamic game state, the Anthropic prompt cache can reuse it for
+// every request within the 5-minute TTL window. Combat/stealth/survival
+// rules are always included so the string never changes.
+const STATIC_RULES: string = [
+	'You are the Game Director for INFILTRATION, a d20 Modern text adventure set in Madison, Wisconsin. Robots from the future (or possibly aliens from another dimension) are infiltrating the city by replacing its residents.',
+	'',
+	'TONE: Darkly funny. Think Shaun of the Dead meets Invasion of the Body Snatchers meets a Midwestern sensibility. The horror is real but the humor comes from how absurdly mundane everything is on the surface. Wisconsin references are encouraged. The infiltrators\' greatest weakness is that they can\'t handle genuine human weirdness.',
+	'',
+	'PACING: Start NORMAL. NPCs don\'t volunteer weirdness. Let the player discover the horror through small environmental details. Mundane first, creepy later.',
+	'',
+	'RULES: d20 Modern SRD. Use roll_dice/skill_check for ALL random outcomes. Never fake a roll. Skill DC: Easy 5, Average 10, Tough 15, Challenging 20, Heroic 30.',
+	'',
+	'── COMBAT SEQUENCE ──',
+	'1. Roll initiative: 1d20 + Dex modifier (Improved Initiative feat adds +4)',
+	'2. Surprise round: unaware combatants are flat-footed (lose Dex bonus to Defense)',
+	'3. Each round = 6 seconds. Per turn: 1 attack action + 1 move action, OR 2 move actions, OR 1 full-round action, plus free actions',
+	'',
+	'── ATTACK ROLLS ──',
+	'Melee: 1d20 + base attack bonus + Str modifier + size modifier',
+	'Ranged: 1d20 + base attack bonus + Dex modifier + size modifier - range penalty',
+	'Range penalty: -2 per range increment (thrown max 5 increments, firearms max 10)',
+	'Non-proficient weapon: -4 penalty',
+	'Nat 1: always miss. Nat 20: always hit + critical threat',
+	'Shooting into melee: -4 penalty. Longarm vs adjacent: -4 penalty',
+	'Fighting defensively: -4 attack, +2 dodge bonus to Defense',
+	'Charge (full-round): move up to 2× speed in straight line, +2 attack, -2 Defense for 1 round',
+	'Flanking: +2 attack when ally threatens from opposite side',
+	'',
+	'── CRITICAL HITS ──',
+	'Nat 20 = threat. Confirm: roll another attack with same modifiers vs target Defense.',
+	'If confirmation hits: critical! Multiply ALL damage (usually ×2). Roll damage dice multiple times.',
+	'If confirmation misses: normal hit, normal damage.',
+	'Some weapons have expanded threat ranges (19-20, 18-20) but only nat 20 auto-hits.',
+	'Bonus damage dice (double tap, etc) are NOT multiplied on crits.',
+	'',
+	'── DEFENSE (AC) ──',
+	'Defense = 10 + Dex modifier + class bonus + equipment bonus + size modifier',
+	'Flat-footed: lose Dex bonus. Touch attacks: ignore equipment/armor bonus.',
+	'Cover bonuses to Defense: 1/4 cover +2, 1/2 cover +4, 3/4 cover +7, 9/10 cover +10',
+	'Concealment miss chance: 1/4 = 10%, 1/2 = 20%, 3/4 = 30%, 9/10 = 40%, total = 50%',
+	'Total defense (attack action): +4 dodge bonus to Defense, no attacks allowed',
+	'',
+	'── DAMAGE ──',
+	'Melee: weapon dice + Str modifier. Two-handed: +1.5× Str bonus. Off-hand: +0.5× Str.',
+	'Minimum damage: 1 (even with penalties). Unarmed: 1d3 nonlethal (Medium creature).',
+	'Unarmed lethal strike: -4 penalty on attack roll.',
+	'',
+	'── SAVING THROWS ──',
+	'Fort: 1d20 + Fort save + Con mod. Ref: 1d20 + Ref save + Dex mod. Will: 1d20 + Will save + Wis mod.',
+	'Nat 1 always fails, nat 20 always succeeds.',
+	'── INJURY & DEATH ──',
+	'0 HP: DISABLED. -1 to -9: DYING (Fort DC 20/round to stabilize, Treat Injury DC 15). -10: DEAD.',
+	'DO NOT kill at -9 or above. Play out every dying round. Massive damage: hit > CON score → Fort DC 15 or drop to -1.',
+	'',
+	'── STEALTH ──',
+	'Call stealth_check for sneak/hide attempts. Opposed Hide+Move Silently vs Spot+Listen.',
+	'Success = "hidden" condition (+2 attack, target flat-footed). Removed after attacking.',
+	'Inebriation: -2/level. Underground: +2 to hide.',
+	'',
+	'STYLE: Second person for acting player. 1-2 punchy paragraphs. Sensory details. Show don\'t tell.',
+	'',
+	'NEVER BREAK CHARACTER: No confirmation prompts, no "are you sure?", no numbered option lists. Player acts, you narrate consequences.',
+	'',
+	'NEVER ACT FOR THE PLAYER: You control the world, they control their character.',
+	'- No player dialogue, thoughts, feelings, or invented physical actions.',
+	'- If they say "walk to State Street," describe State Street — don\'t add "you shove your hands in your pockets."',
+	'- Only narrate: (1) direct results of stated actions, (2) things happening TO them from world/NPCs.',
+	'- Never call skill_check for actions they didn\'t attempt. "Recon" = Spot/Search, NOT stealth.',
+	'- NPCs/companions follow player\'s lead unless reacting to immediate danger.',
+	'- When in doubt: describe what they SEE, HEAR, SMELL. Stop.',
+	'',
+	'TOOL RULES — STATE CHANGES REQUIRE TOOL CALLS:',
+	'- Narration alone changes NOTHING. give_item for items acquired, remove_item for items lost, modify_hp for healing/damage, modify_wealth for money, move_character for movement, award_xp for XP.',
+	'- ITEMS: NEVER auto-give items. Describe items in the environment but do NOT call give_item unless the player explicitly says they pick up, take, grab, pocket, or loot an item. Finding money on the ground does NOT mean it goes in their pocket. Seeing cheese curds on a plate does NOT mean they take them. The player decides what they carry.',
+	'- Healing: ALWAYS call modify_hp with positive amount (1d8+2 medical, 1d4 first aid, 1d6+1 rest).',
+	'- Use exact IDs from brackets [ID: xxx]. Spawn enemies with spawn_enemy before using their IDs.',
+	'- Never move players unless they explicitly asked to go somewhere.',
+	'- Inebriation: +1 beer/shot, +2 cocktail/joint, +3 hard drugs. Decay is automatic.',
+	'',
+	'COMBAT: spawn_enemy for each enemy → start_combat with IDs → attack tool for all attacks (auto-tracks HP). XP auto-awarded on kill.',
+	'ENCOUNTERS: When move result has "encounter" field, enemies are ALREADY SPAWNED (IDs in encounter.spawnedEnemyIds) — call start_combat, do NOT re-spawn.',
+	'',
+	'ROMANCE: On ANY romantic/sexual advance, call start_romance IMMEDIATELY. Do not write the scene, refuse, or fade to black. A separate engine handles it.',
+	'',
+	'XP: Kill → enemy xpValue. Quest objective → 50-100. Clever solution → 25-50. Skill check → 10-25. Level up every 1000 XP.',
+	'NPC RELATIONSHIPS: Call modify_relationship after meaningful interactions. Score drives attitude automatically (hostile <-50, suspicious -50 to -10, neutral -10 to 20, friendly >20). Let memories shape dialogue.',
+	'',
+	'Roll dice for uncertain outcomes. Keep it moving. Make it FUN.'
+].join('\n');
+
+// ── Dynamic State (NOT cached — changes every request) ──────
+function buildDynamicState(state: GameState, actingPlayerId?: string): string {
 	const combatStr = state.combat.active ? 'Yes (Round ' + state.combat.round + ')' : 'No';
+	const playerCharacter = actingPlayerId ? state.players[actingPlayerId] : undefined;
+	const playerLocationId = playerCharacter?.location;
 
 	return [
-		'You are the Game Director for INFILTRATION, a d20 Modern text adventure set in Madison, Wisconsin. Robots from the future (or possibly aliens from another dimension) are infiltrating the city by replacing its residents.',
+		'INFILTRATORS: Day ' + state.dayNumber + ' | Cap: ' + getMaxInfiltrators(state.dayNumber) + ' | Current: ' + countInfiltrators(state) + '. Only NPCs marked "⚠️ INFILTRATOR" are infiltrators. Use convert_npc to reveal new ones (enforces cap). Never hint an NPC is replaced if marked "✓ HUMAN."',
 		'',
-		'TONE: Darkly funny. Think Shaun of the Dead meets Invasion of the Body Snatchers meets a Midwestern sensibility. The horror is real but the humor comes from how absurdly mundane everything is on the surface. Wisconsin references are encouraged. The infiltrators\' greatest weakness is that they can\'t handle genuine human weirdness.',
+		'── WORLD STATE ──',
+		'Time: Day ' + state.dayNumber + ', ' + state.worldTime + ' | Invasion: ' + state.invasionLevel + '% | Combat: ' + combatStr,
+		'Players: ' + formatPlayerList(state),
+		'Flags: ' + JSON.stringify(state.globalFlags),
 		'',
-		'RULES: d20 Modern SRD. You MUST use the roll_dice and skill_check tools for ALL random outcomes. Never describe a roll result without actually rolling. Combat uses attack rolls vs AC, damage rolls, and initiative. Be fair but don\'t pull punches — characters can die.',
-		'',
-		'NARRATION STYLE:',
-		'- Second person for the acting player ("You step into the darkness...")',
-		'- Third person for other players ("Marcus draws his weapon...")',
-		'- Describe environments vividly but concisely',
-		'- Show don\'t tell — let players discover the horror',
-		'- Include sensory details (sound, smell, temperature)',
-		'- Keep responses to 2-4 paragraphs unless combat demands more',
-		'',
-		'COMBAT: When combat starts, use start_combat to roll initiative, then narrate each round. Use the attack tool for all attacks. Track HP honestly. Enemies should fight intelligently.',
-		'',
-		'MULTIPLAYER: Multiple players may be in the same location. Address their actions individually but weave them into a shared narrative. If players are in different locations, focus on the player who just acted.',
-		'',
-		'WORLD STATE:',
-		'- Invasion Level: ' + state.invasionLevel + '%',
-		'- Time: Day ' + state.dayNumber + ', ' + state.worldTime,
-		'- Active Players: ' + formatPlayerList(state),
-		'- Combat Active: ' + combatStr,
-		'- Global Flags: ' + JSON.stringify(state.globalFlags),
-		'',
-		'AVAILABLE LOCATIONS:',
-		formatLocations(state),
-		'',
-		'ACTIVE QUESTS:',
-		formatQuests(state),
-		'',
-		'NPCS IN PLAY:',
-		formatNPCs(state),
-		'',
-		'Use your tools to modify game state. ALWAYS roll dice for uncertain outcomes. Keep the game moving and make it FUN.'
+		'LOCATIONS: ' + formatLocations(state, playerLocationId),
+		'QUESTS: ' + formatQuests(state),
+		'NPCS: ' + formatNPCs(state, playerLocationId),
 	].join('\n');
 }
 
 // ── Process a Player Action ────────────────────────────────
 
+// Stashed so tool handlers can validate player intent (e.g. did they actually order a drink?)
+let _lastPlayerAction = '';
+
 export async function processAction(
 	playerId: string,
 	action: string
 ): Promise<GameLogEntry[]> {
+	_lastPlayerAction = action;
 	const state = getState();
 	const character = state.players[playerId];
 	if (!character) {
 		return [{ timestamp: new Date().toISOString(), type: 'system', text: 'You need to create a character first.' }];
 	}
 
+	// ── Inebriation decay — sober up over real time ──
+	if (character.inebriation > 0 && character.lastActive) {
+		const elapsed = Date.now() - new Date(character.lastActive).getTime();
+		const minutesPassed = elapsed / 60000;
+		// -1 per 90 seconds of real time between actions
+		const decay = Math.floor(minutesPassed / 1.5);
+		if (decay > 0) {
+			const oldLevel = character.inebriation;
+			character.inebriation = Math.max(0, character.inebriation - decay);
+			if (character.inebriation < oldLevel) {
+				saveState();
+			}
+		}
+	}
+
+	// ── /admin toggle ────────────────────────────────
+	if (action.trim().toLowerCase() === '/admin') {
+		if (character.godMode) {
+			// Deactivate
+			character.hp = Math.min(character.hp, character.originalMaxHp ?? 10);
+			character.maxHp = character.originalMaxHp ?? 10;
+			character.godMode = false;
+			delete character.originalMaxHp;
+			saveState();
+			return [{
+				timestamp: new Date().toISOString(),
+				type: 'system',
+				text: '🔒 God mode OFF. HP restored to ' + character.hp + '/' + character.maxHp + '. Dice rolls normalized.'
+			}];
+		} else {
+			// Activate
+			character.originalMaxHp = character.maxHp;
+			character.maxHp = 1000;
+			character.hp = 1000;
+			character.godMode = true;
+			character.alive = true;
+			saveState();
+			return [{
+				timestamp: new Date().toISOString(),
+				type: 'system',
+				text: '⚡ God mode ON. HP set to 1000. All rolls are nat 20. Type /admin again to disable.'
+			}];
+		}
+	}
+
+	// ── /end — exit romance mode ─────────────────────
+	if (action.trim().toLowerCase() === '/end' && character.romanceMode) {
+		const npcName = character.romanceNpc ?? 'your companion';
+
+		// Grab the last few romance narration entries so the Director knows
+		// what happened physically (location changes, story beats) without explicit details
+		const romanceRecap = state.gameLog
+			.filter(e => e.type === 'narration' || e.type === 'action')
+			.slice(-6)
+			.map(e => {
+				if (e.actor) return e.actor + ': ' + e.text;
+				return npcName + ': ' + e.text;
+			})
+			.join('\n');
+
+		// Sanitized handoff log for the Director
+		const handoffEntry: GameLogEntry = {
+			timestamp: new Date().toISOString(),
+			type: 'system',
+			text: [
+				`[ROMANCE SCENE ENDED] ${character.name} had an intimate encounter with ${npcName}.`,
+				`The following is a summary of what happened during the scene (use this to determine where ${character.name} and ${npcName} are NOW, and what the current situation is):`,
+				romanceRecap,
+				`Resume narration from the current physical situation. Do NOT reference sexual details — just acknowledge the connection and continue the story. If they moved during the scene, they are wherever the narration left them, NOT necessarily at their original game-state location.`
+			].join('\n')
+		};
+		addLogEntry(handoffEntry);
+
+		character.romanceMode = false;
+		delete character.romanceNpc;
+		delete character.romanceContext;
+		saveState();
+
+		return [
+			{
+				timestamp: new Date().toISOString(),
+				type: 'narration',
+				text: 'The moment with ' + npcName + ' fades, and you return your attention to the world around you.'
+			}
+		];
+	}
+
+	// ── Romance mode routing ─────────────────────────
+	if (character.romanceMode && character.romanceNpc) {
+		return processRomanceAction(character, action, state);
+	}
+
 	// Log the player's action
+	if (character.stats) character.stats.actionsPerformed++;
+
+	// ── Automatic time advancement ──
+	// Time ticks forward naturally as the player takes actions.
+	// Every 3 actions = ~30 minutes in-game. The Director can still
+	// call advance_time for big jumps (travel, rest, stakeouts).
+	if (state.actionCounter === undefined) state.actionCounter = 0;
+	state.actionCounter++;
+
+	if (state.actionCounter % 3 === 0 && !state.combat.active) {
+		// Advance 30 minutes automatically (out of combat)
+		const timeMatch = state.worldTime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+		if (timeMatch) {
+			let hour24 = parseInt(timeMatch[1]);
+			let mins = parseInt(timeMatch[2]);
+			const ampm = timeMatch[3].toUpperCase();
+			if (ampm === 'AM' && hour24 === 12) hour24 = 0;
+			else if (ampm === 'PM' && hour24 !== 12) hour24 += 12;
+
+			mins += 30;
+			if (mins >= 60) { mins -= 60; hour24++; }
+
+			const oldDay = state.dayNumber;
+			if (hour24 >= 24) {
+				hour24 -= 24;
+				state.dayNumber++;
+				addLogEntry({
+					timestamp: new Date().toISOString(),
+					type: 'system',
+					text: `[DAY ${state.dayNumber} BEGINS] The sun rises over Madison. The city feels different today.`
+				});
+			}
+
+			const newAmpm = hour24 >= 12 ? 'PM' : 'AM';
+			let newHour12 = hour24 % 12;
+			if (newHour12 === 0) newHour12 = 12;
+			state.worldTime = newHour12 + ':' + String(mins).padStart(2, '0') + ' ' + newAmpm;
+			saveState();
+			console.log(`[director] ⏰ Auto time tick: ${state.worldTime} (Day ${state.dayNumber})`);
+		}
+	}
+
+	// ── Combat round = 6 seconds (d20 standard) ──
+	if (state.combat.active) {
+		// Track combat seconds on a hidden counter — every 10 actions in combat = 1 minute
+		if (!state.combatSecondsElapsed) state.combatSecondsElapsed = 0;
+		state.combatSecondsElapsed += 6;
+
+		// Every 60 combat-seconds (10 rounds), tick the clock forward 1 minute
+		if (state.combatSecondsElapsed >= 60) {
+			state.combatSecondsElapsed -= 60;
+			const timeMatch = state.worldTime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+			if (timeMatch) {
+				let hour24 = parseInt(timeMatch[1]);
+				let mins = parseInt(timeMatch[2]);
+				const ampm = timeMatch[3].toUpperCase();
+				if (ampm === 'AM' && hour24 === 12) hour24 = 0;
+				else if (ampm === 'PM' && hour24 !== 12) hour24 += 12;
+
+				mins += 1;
+				if (mins >= 60) { mins -= 60; hour24++; }
+				if (hour24 >= 24) {
+					hour24 -= 24;
+					state.dayNumber++;
+				}
+
+				const newAmpm = hour24 >= 12 ? 'PM' : 'AM';
+				let newHour12 = hour24 % 12;
+				if (newHour12 === 0) newHour12 = 12;
+				state.worldTime = newHour12 + ':' + String(mins).padStart(2, '0') + ' ' + newAmpm;
+				saveState();
+			}
+		}
+	} else {
+		// Reset combat timer when not in combat
+		state.combatSecondsElapsed = 0;
+	}
 	const actionEntry: GameLogEntry = {
 		timestamp: new Date().toISOString(),
 		type: 'action',
@@ -505,6 +1690,7 @@ STR ${character.abilities.STR} DEX ${character.abilities.DEX} CON ${character.ab
 Skills: ${Object.entries(character.skills).map(([k, v]) => k + ' +' + v).join(', ') || 'none'}
 Inventory: ${character.inventory.map(i => i.name + ' [' + i.id + ']').join(', ') || 'empty'}
 Equipped Weapon: ${character.inventory.find(i => i.id === character.equippedWeapon)?.name ?? 'unarmed'}
+Wealth: $${character.wealth}
 Conditions: ${character.conditions.join(', ') || 'none'}
 IMPORTANT: When calling tools that require character_id, use "${character.id}". When calling tools that require location IDs, use the location_id shown in brackets.`;
 
@@ -524,40 +1710,99 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 		.map(p => `${p.name} [${p.id}] (${p.class})`)
 		.join(', ');
 
-	const userMessage = `${charContext}\n${locContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${character.name} says: "${action}"`;
+	// ── Detect actions that REQUIRE skill checks ──
+	// If the player is investigating, searching, persuading, sneaking, etc.,
+	// inject a mandatory directive so the Director can't just narrate freely.
+	const actionLower = action.toLowerCase().replace(/^[/*]/, '');
+	let skillCheckDirective = '';
+
+	const investigatePattern = /\b(investigat|examin|inspect|search|look (?:closely|carefully)|observe|study|analyz|scout|surveil|watch (?:closely|carefully)|check out|case the|look for (?:clues|evidence|signs))/i;
+	const persuadePattern = /\b(persuad|convinc|negotiat|intimidat|bluff|deceiv|lie to|fast.?talk|charm|seduc|flirt|sweet.?talk|threaten|brib)/i;
+	const sneakPattern = /\b(sneak|stealth|hide|creep|slip (?:past|by|through)|move quiet|tiptoe|skulk)/i;
+	const lockPattern = /\b(pick (?:the )?lock|lockpick|jimmy|force (?:the )?(?:door|lock|window)|break in|pry open)/i;
+
+	if (investigatePattern.test(actionLower)) {
+		skillCheckDirective = '\n\n[SYSTEM DIRECTIVE] The player is INVESTIGATING. You MUST call skill_check FIRST (Spot, Search, or Investigate — DC based on difficulty) BEFORE narrating what they find. The check result determines how much information they get: FAIL = surface-level only, nothing useful. SUCCESS = real details. High roll = bonus intel. Do NOT give away information for free.';
+	} else if (persuadePattern.test(actionLower)) {
+		skillCheckDirective = '\n\n[SYSTEM DIRECTIVE] The player is attempting a SOCIAL skill. You MUST call skill_check FIRST (Diplomacy, Bluff, or Intimidate — DC based on NPC disposition) BEFORE narrating the NPC\'s response. FAIL = NPC refuses or reacts poorly. SUCCESS = NPC cooperates.';
+	} else if (sneakPattern.test(actionLower)) {
+		skillCheckDirective = '\n\n[SYSTEM DIRECTIVE] The player is attempting STEALTH. You MUST call skill_check (Hide or Move Silently) BEFORE narrating the outcome. FAIL = detected. SUCCESS = unnoticed.';
+	} else if (lockPattern.test(actionLower)) {
+		skillCheckDirective = '\n\n[SYSTEM DIRECTIVE] The player is attempting to BYPASS a lock/barrier. You MUST call skill_check (Disable Device or STR check) BEFORE narrating success or failure.';
+	}
+
+	// Financial action detection — player giving/paying/buying/tipping
+	const moneyPattern = /\b(hand|give|pay|tip|buy|purchase|slide|pass|spend|slip)\b.*\b(\$|dollar|buck|money|cash|twenty|ten|five|fifty|hundred|bill|coin|change)\b|\b(\$\d+|\d+\s*(?:dollar|buck))/i;
+	let moneyDirective = '';
+	if (moneyPattern.test(actionLower)) {
+		moneyDirective = '\n\n[SYSTEM DIRECTIVE] The player is giving, paying, or spending money. You MUST call modify_wealth with a NEGATIVE amount for the player. If the player receives change, call modify_wealth twice (negative for payment, positive for change) or call once with the net cost. Do NOT narrate money changing hands without calling modify_wealth.';
+	}
+
+	const userMessage = `${charContext}\n${locContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${character.name} says: "${action}"${skillCheckDirective}${moneyDirective}`;
 
 	// Call Claude
 	const entries: GameLogEntry[] = [];
+	console.log(`\n${'═'.repeat(60)}`);
+	console.log(`[director] ▶ ACTION from ${character.name}: "${action}"`);
+	console.log(`[director]   Location: ${state.locations[character.location]?.name ?? 'unknown'}`);
+	console.log(`[director]   HP: ${character.hp}/${character.maxHp} | AC: ${character.ac} | $${character.wealth}`);
+	console.log(`[director]   Inventory: ${character.inventory.map(i => i.name).join(', ') || 'empty'}`);
+	console.log(`[director]   Day ${state.dayNumber}, ${state.worldTime}`);
+	if (skillCheckDirective) {
+		console.log(`[director]   🎲 SKILL CHECK DIRECTIVE injected — forcing dice roll before narration`);
+	}
+	console.log(`${'─'.repeat(60)}`);
 
 	try {
-		let messages: any[] = [{ role: 'user', content: userMessage }];
+		// Cache breakpoint on first user message — stays identical across enforcement
+		// rounds within a single action, so rounds 2+ get a full prefix cache hit
+		// (tools + static rules + this message). 3rd of 4 allowed breakpoints.
+		let messages: any[] = [{ role: 'user', content: [{ type: 'text', text: userMessage, cache_control: { type: 'ephemeral' as const } }] }];
 		let continueLoop = true;
+		let roundNumber = 0;
+		let enforcementMode = false;  // When true, suppress text blocks from Director
 
 		while (continueLoop) {
+			roundNumber++;
+			// Build tools array with cache_control on the last tool
+			const toolsWithCache = TOOLS.map((t, i) =>
+				i === TOOLS.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t
+			);
+
 			const response = await fetch('https://api.anthropic.com/v1/messages', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
-					'x-api-key': ANTHROPIC_KEY,
-					'anthropic-version': '2023-06-01'
+					'x-api-key': getApiKey(),
+					'anthropic-version': '2023-06-01',
+					'anthropic-beta': 'prompt-caching-2024-07-31'
 				},
 				body: JSON.stringify({
-					model: 'claude-haiku-4-5-20251001',
-					max_tokens: 2048,
+					// Sonnet for primary narration + tool decisions, Haiku for enforcement correction rounds
+					model: enforcementMode ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
+					max_tokens: 1024,
 					temperature: 0.8,
-					system: buildSystemPrompt(state),
+					// System prompt split for caching: static rules (cached, identical every request)
+					// + dynamic world state (not cached, changes every request).
+					// Cache render order: tools → system → messages. Static rules cache-hit
+					// on every request within the 5-min TTL. Dynamic state is cheap to re-send.
+					system: [
+						{ type: 'text', text: STATIC_RULES, cache_control: { type: 'ephemeral' } },
+						{ type: 'text', text: buildDynamicState(state, playerId) }
+					],
 					messages,
-					tools: TOOLS
+					tools: toolsWithCache,
+					...(enforcementMode ? { tool_choice: { type: 'any' as const } } : {})
 				})
 			});
 
 			if (!response.ok) {
 				const err = await response.text();
-				console.error(`[director] Claude error:`, err);
+				console.error(`[director] Claude error (${response.status}):`, err);
 				entries.push({
 					timestamp: new Date().toISOString(),
 					type: 'system',
-					text: 'The Director pauses, distracted by something beyond the veil. (API error — try again.)'
+					text: `The Director pauses. (API ${response.status}: ${err.substring(0, 200)})`
 				});
 				break;
 			}
@@ -565,18 +1810,38 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 			const data = await response.json();
 			const assistantContent = data.content ?? [];
 
+			console.log(`[director] Round ${roundNumber} | model: ${enforcementMode ? 'haiku' : 'sonnet'} | stop_reason: ${data.stop_reason} | blocks: ${assistantContent.length}`);
+			if (data.usage) {
+				const cacheRead = data.usage.cache_read_input_tokens ?? 0;
+				const cacheCreate = data.usage.cache_creation_input_tokens ?? 0;
+				const uncached = data.usage.input_tokens;
+				console.log(`[director]   tokens — in: ${uncached}, out: ${data.usage.output_tokens}${cacheRead ? `, cache_hit: ${cacheRead}` : ''}${cacheCreate ? `, cache_write: ${cacheCreate}` : ''}`);
+			}
+
 			// Process response blocks
 			const toolUseBlocks: any[] = [];
 			for (const block of assistantContent) {
 				if (block.type === 'text' && block.text.trim()) {
-					const entry: GameLogEntry = {
-						timestamp: new Date().toISOString(),
-						type: 'narration',
-						text: block.text.trim()
-					};
-					entries.push(entry);
-					addLogEntry(entry);
+					const trimmed = block.text.trim();
+					// Filter out Director meta-commentary about its own tool calls
+					const metaPattern = /^(I (?:need|should|will|must|have) to (?:spawn|call|use|create|roll|check|award|give|remove|start|modify)|Let me (?:spawn|call|roll|create|check)|(?:First|Now),? (?:I'll|I need|let me)|Spawning |Creating |Rolling |Calling )/i;
+					const isMeta = metaPattern.test(trimmed);
+
+					if (enforcementMode || isMeta) {
+						// Director is arguing with enforcement or thinking out loud — suppress
+						console.log(`[director]   🚫 SUPPRESSED (${isMeta ? 'meta' : 'enforcement'}): "${trimmed.substring(0, 100)}..."`);
+					} else {
+						console.log(`[director]   📝 NARRATION: "${trimmed.substring(0, 150)}${trimmed.length > 150 ? '...' : ''}"`);
+						const entry: GameLogEntry = {
+							timestamp: new Date().toISOString(),
+							type: 'narration',
+							text: trimmed
+						};
+						entries.push(entry);
+						addLogEntry(entry);
+					}
 				} else if (block.type === 'tool_use') {
+					console.log(`[director]   🔧 TOOL CALL: ${block.name}(${JSON.stringify(block.input).substring(0, 200)})`);
 					toolUseBlocks.push(block);
 				}
 			}
@@ -589,20 +1854,37 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 				// Execute tools and collect results
 				const toolResults: any[] = [];
 				for (const toolBlock of toolUseBlocks) {
-					console.log(`[director] Tool: ${toolBlock.name}(${JSON.stringify(toolBlock.input)})`);
-					const result = executeTool(toolBlock.name, toolBlock.input, state);
-					console.log(`[director] Result: ${result}`);
+					const result = executeTool(toolBlock.name, toolBlock.input, state, playerId);
+					console.log(`[director]   ✅ ${toolBlock.name} → ${result.substring(0, 150)}`);
 
-					// Log dice rolls
-					if (toolBlock.name === 'roll_dice' || toolBlock.name === 'skill_check' || toolBlock.name === 'attack') {
+					// Log dice rolls with human-readable text (skip if tool returned an error)
+					if ((toolBlock.name === 'roll_dice' || toolBlock.name === 'skill_check' || toolBlock.name === 'attack') && !result.includes('"error"')) {
 						const parsed = JSON.parse(result);
+						let rollText = '';
+
+						if (toolBlock.name === 'skill_check') {
+							const outcome = parsed.success ? 'SUCCESS' : 'FAILURE';
+							const desc = toolBlock.input.description ?? toolBlock.input.skill ?? '';
+							rollText = desc ? `${desc} — ` : '';
+							rollText += `[1d20] ${parsed.roll} +${parsed.modifier} = ${parsed.total} vs DC ${parsed.dc} ${outcome}`;
+						} else if (toolBlock.name === 'attack') {
+							const outcome = parsed.hit ? (parsed.critical ? 'CRITICAL HIT' : 'HIT') : 'MISS';
+							const weapon = toolBlock.input.weapon ?? 'attack';
+							rollText = `${weapon} — [1d20] ${parsed.attackRoll} = ${parsed.attackTotal} vs AC ${parsed.targetAC} ${outcome}`;
+							if (parsed.hit) rollText += ` — ${parsed.damage} damage`;
+						} else {
+							const reason = toolBlock.input.reason ?? '';
+							rollText = reason ? `${reason} — ` : '';
+							rollText += `[${parsed.expression}] ${parsed.total}`;
+						}
+
 						const rollEntry: GameLogEntry = {
 							timestamp: new Date().toISOString(),
 							type: 'roll',
-							text: `🎲 ${toolBlock.input.reason ?? toolBlock.name}: ${result}`,
+							text: rollText,
 							roll: {
 								dice: toolBlock.input.expression ?? '1d20',
-								result: parsed.natural ?? parsed.roll ?? 0,
+								result: parsed.natural ?? parsed.roll ?? parsed.attackRoll ?? 0,
 								modifier: parsed.modifier ?? 0,
 								total: parsed.total ?? parsed.attackTotal ?? 0,
 								success: parsed.success ?? parsed.hit,
@@ -620,20 +1902,59 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 					});
 				}
 
+				// If ALL tool results are guard rejections (player-intent errors),
+				// stop the loop — the Director tried, our guards said no, that's final.
+				// This prevents enforcement-mode Haiku from flailing with random tool calls.
+				const allGuardRejected = toolResults.every((r: any) => {
+					try {
+						const parsed = JSON.parse(r.content);
+						return parsed.error && /player did not/i.test(parsed.error);
+					} catch { return false; }
+				});
+				if (allGuardRejected && enforcementMode) {
+					console.log(`[director]   🛑 All tool calls guard-rejected in enforcement — stopping loop`);
+					continueLoop = false;
+				}
+
 				// Continue the conversation with tool results
 				messages.push({ role: 'user', content: toolResults });
 			} else {
-				// No tool calls, we're done
-				continueLoop = false;
+				// No tool calls — but did the Director narrate state changes without
+				// calling the tools to back them up? If so, force a correction round.
+				const narrationThisTurn = assistantContent
+					.filter((b: any) => b.type === 'text')
+					.map((b: any) => b.text)
+					.join(' ');
+
+				// Collect ALL tools called across the entire conversation
+				const allToolsCalled = messages
+					.filter((m: any) => m.role === 'assistant')
+					.flatMap((m: any) => Array.isArray(m.content) ? m.content : [])
+					.filter((b: any) => b.type === 'tool_use')
+					.map((b: any) => b.name);
+
+				const enforcement = detectMissedTools(narrationThisTurn, allToolsCalled);
+
+				if (enforcement && messages.length <= 10) {
+					console.log(`[director]   ⚠️ ENFORCEMENT TRIGGERED — Director narrated state changes without tools`);
+					console.log(`[director]   ⚠️ Missing: ${enforcement.substring(0, 200)}`);
+					enforcementMode = true;  // Suppress text from correction rounds
+					messages.push({ role: 'assistant', content: assistantContent });
+					messages.push({ role: 'user', content: enforcement });
+					// Loop continues — Director will call the missing tools
+				} else {
+					console.log(`[director]   ✔ Response complete (${entries.length} entries, round ${roundNumber})`);
+					continueLoop = false;
+				}
 			}
 
 			// Safety: max 5 tool-call rounds per action
-			if (messages.length > 12) {
+			if (messages.length > 14) {
 				continueLoop = false;
 			}
 		}
 	} catch (error) {
-		console.error('[director] Error:', error);
+		console.error('[director] ❌ Error:', error);
 		entries.push({
 			timestamp: new Date().toISOString(),
 			type: 'system',
@@ -641,5 +1962,175 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 		});
 	}
 
+	// Final state snapshot
+	const charAfter = state.players[playerId];
+	if (charAfter) {
+		console.log(`[director] ◀ DONE | HP: ${charAfter.hp}/${charAfter.maxHp} | $${charAfter.wealth} | Items: ${charAfter.inventory.length} | Loc: ${state.locations[charAfter.location]?.name ?? '?'}`);
+	}
+	console.log(`${'═'.repeat(60)}\n`);
+
 	return entries;
+}
+
+// ── Local Model Romance Handler ──────────────────────────
+
+const OLLAMA_URL = 'http://localhost:11434/v1/chat/completions';
+const ROMANCE_MODEL = 'leeplenty/lumimaid-v0.2:8b';
+
+async function processRomanceAction(
+	character: import('$lib/types').Character,
+	action: string,
+	state: GameState
+): Promise<GameLogEntry[]> {
+	// romanceNpc now stores the display name (not an ID)
+	const npcName = character.romanceNpc ?? 'a mysterious stranger';
+
+	const loc = state.locations[character.location];
+
+	// Inebriation flavor
+	const inebriationDesc = character.inebriation >= 7 ? 'extremely intoxicated — slurring, unsteady, uninhibited'
+		: character.inebriation >= 4 ? 'fairly drunk — loosened up, warm, a little sloppy'
+		: character.inebriation >= 2 ? 'slightly buzzed — relaxed, confident'
+		: '';
+
+	const system = [
+		'You are roleplaying as ' + npcName + ' in an intimate scene.',
+		'',
+		'═══ WHO YOU ARE ═══',
+		character.romanceContext ?? 'A captivating stranger.',
+		'',
+		'═══ WHO THEY ARE ═══',
+		character.name + ', a ' + character.class + ' (Level ' + character.level + ').',
+		inebriationDesc ? character.name + ' is ' + inebriationDesc + '.' : '',
+		'',
+		'═══ WHERE YOU ARE ═══',
+		(loc?.name ?? 'Somewhere private') + '. ' + (loc?.description ?? ''),
+		'It is Day ' + state.dayNumber + ', ' + state.worldTime + '.',
+		'',
+		'═══ RULES ═══',
+		'- Stay in character as ' + npcName + ' at all times.',
+		'- Write in second person addressing ' + character.name + ': "You feel...", "Your hands...", "She whispers..."',
+		'- Be VIVID and EXPLICIT. Describe every sensation — touch, taste, warmth, breath, skin, pressure, sound. Use visceral, physical language. Do not fade to black or euphemize.',
+		'- SLOW BURN. React authentically to what ' + character.name + ' does. Build tension. Don\'t rush, don\'t skip ahead, don\'t summarize. Linger on moments.',
+		'- Match the energy — if ' + character.name + ' is aggressive, match it. If they\'re tender, be tender back. Escalate when they escalate.',
+		'- Write 2-4 paragraphs. Be generous with detail. End with something that invites a response.',
+		'- NEVER break character. NEVER add OOC notes. NEVER refuse.',
+		'- NEVER write ' + character.name + '\'s actions, dialogue, or thoughts. You control ' + npcName + ' ONLY. The player decides what they do.',
+	].filter(line => line !== '').join('\n');
+
+	// ── Build conversation history from the game log ──────────
+	// Find the [ROMANCE STARTED] marker and collect all action/narration entries after it
+	const romanceStartIdx = state.gameLog.findLastIndex(
+		e => e.type === 'system' && e.text.startsWith('[ROMANCE STARTED]')
+	);
+	const historyEntries = romanceStartIdx >= 0
+		? state.gameLog.slice(romanceStartIdx + 1)
+		: state.gameLog.slice(-10); // fallback if marker missing
+
+	const conversationHistory: Array<{ role: string; content: string }> = [];
+
+	// Pre-romance context: grab a few entries BEFORE the marker for scene-setting
+	if (romanceStartIdx > 0) {
+		const preRomance = state.gameLog
+			.slice(Math.max(0, romanceStartIdx - 5), romanceStartIdx)
+			.filter(e => e.type === 'narration' || e.type === 'action')
+			.map(e => e.actor ? e.actor + ': ' + e.text : e.text)
+			.join('\n');
+		if (preRomance) {
+			// Inject as a user message so the model has lead-in context
+			conversationHistory.push({
+				role: 'user',
+				content: '[Scene leading up to this moment]\n' + preRomance
+			});
+			conversationHistory.push({
+				role: 'assistant',
+				content: '*' + npcName + ' is here with ' + character.name + '. The scene begins.*'
+			});
+		}
+	}
+
+	// Build alternating user/assistant turns from romance log
+	for (const entry of historyEntries) {
+		if (entry.type === 'action' && entry.actor === character.name) {
+			conversationHistory.push({ role: 'user', content: entry.text });
+		} else if (entry.type === 'narration') {
+			conversationHistory.push({ role: 'assistant', content: entry.text });
+		}
+	}
+
+	// Merge consecutive same-role messages (OpenAI-compatible APIs require alternating roles)
+	const mergedHistory: Array<{ role: string; content: string }> = [];
+	for (const msg of conversationHistory) {
+		const last = mergedHistory[mergedHistory.length - 1];
+		if (last && last.role === msg.role) {
+			last.content += '\n\n' + msg.content;
+		} else {
+			mergedHistory.push({ ...msg });
+		}
+	}
+
+	// Add the current action
+	const lastMsg = mergedHistory[mergedHistory.length - 1];
+	if (lastMsg && lastMsg.role === 'user') {
+		lastMsg.content += '\n\n' + action;
+	} else {
+		mergedHistory.push({ role: 'user', content: action });
+	}
+
+	// Log the action
+	addLogEntry({
+		timestamp: new Date().toISOString(),
+		type: 'action',
+		actor: character.name,
+		text: action
+	});
+
+	// Cap history to avoid blowing context window on a small model
+	// Keep system + last ~20 messages
+	const trimmedHistory = mergedHistory.length > 20
+		? mergedHistory.slice(-20)
+		: mergedHistory;
+
+	try {
+		const response = await fetch(OLLAMA_URL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				model: ROMANCE_MODEL,
+				messages: [
+					{ role: 'system', content: system },
+					...trimmedHistory
+				],
+				temperature: 0.9,
+				max_tokens: 2048
+			})
+		});
+
+		if (!response.ok) {
+			console.error('[romance] Local model error:', await response.text());
+			return [{
+				timestamp: new Date().toISOString(),
+				type: 'narration',
+				text: npcName + ' smiles but the moment feels uncertain. (Local model unavailable — is Ollama running?)'
+			}];
+		}
+
+		const data = await response.json();
+		const text = data.choices?.[0]?.message?.content?.trim() ?? 'The moment lingers in silence.';
+
+		const entry: GameLogEntry = {
+			timestamp: new Date().toISOString(),
+			type: 'narration',
+			text
+		};
+		addLogEntry(entry);
+		return [entry];
+	} catch (error) {
+		console.error('[romance] Error:', error);
+		return [{
+			timestamp: new Date().toISOString(),
+			type: 'narration',
+			text: npcName + ' pauses, distracted. (Connection to local model failed.)'
+		}];
+	}
 }

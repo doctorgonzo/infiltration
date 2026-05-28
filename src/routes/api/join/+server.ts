@@ -65,30 +65,86 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'A living character with that name already exists. Choose another.' }, { status: 409 });
 	}
 
-	// ── Roll Ability Scores (4d6 drop lowest × 6) ──────────
-	const abilityRolls = Array.from({ length: 6 }, () => rollAbilityScore());
-	const sortedScores = abilityRolls.map(r => r.total).sort((a, b) => b - a);
+	// ── Ability Scores ─────────────────────────────────────
+	let abilities: AbilityScores;
 
-	// Assign highest to key ability, then prioritize smartly per class
-	const keyAbility = CLASS_KEY_ABILITY[heroClass as HeroClass];
-	const priorityOrder = getAbilityPriority(heroClass as HeroClass);
-
-	const abilities: AbilityScores = { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 };
-	let scoreIdx = 0;
-	for (const ab of priorityOrder) {
-		abilities[ab] = sortedScores[scoreIdx++];
+	if (body.abilities && typeof body.abilities === 'object') {
+		// Player rolled their own stats — validate them
+		const abilityKeys: AbilityName[] = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA'];
+		abilities = { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 };
+		for (const key of abilityKeys) {
+			const val = body.abilities[key];
+			if (typeof val !== 'number' || val < 3 || val > 18) {
+				return json({ error: `Invalid ability score for ${key}: must be 3-18` }, { status: 400 });
+			}
+			abilities[key] = val;
+		}
+	} else {
+		// Auto-roll and assign (legacy / fallback)
+		const abilityRolls = Array.from({ length: 6 }, () => rollAbilityScore());
+		const sortedScores = abilityRolls.map(r => r.total).sort((a, b) => b - a);
+		const priorityOrder = getAbilityPriority(heroClass as HeroClass);
+		abilities = { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 };
+		let scoreIdx = 0;
+		for (const ab of priorityOrder) {
+			abilities[ab] = sortedScores[scoreIdx++];
+		}
 	}
 
 	// ── Derived Stats ──────────────────────────────────────
 	const hitDie = CLASS_HIT_DIE[heroClass as HeroClass];
 	const conMod = abilityModifier(abilities.CON);
 	const dexMod = abilityModifier(abilities.DEX);
-	const maxHp = Math.max(1, hitDie + conMod);
 
-	// ── Skills (class skills at rank 2) ────────────────────
+	// ── Feats ──────────────────────────────────────────────
+	const feats: string[] = body.feats && Array.isArray(body.feats)
+		? ['Simple Weapons Proficiency', ...body.feats]
+		: ['Simple Weapons Proficiency', CLASS_STARTING_FEAT[heroClass as HeroClass]];
+
+	// ── Apply feat bonuses ─────────────────────────────────
+	let hpBonus = 0;
+	let acBonus = 0;
+	let initBonus = 0;
+
+	for (const feat of feats) {
+		switch (feat) {
+			case 'Toughness':
+				hpBonus += 3;
+				break;
+			case 'Dodge':
+				acBonus += 1;
+				break;
+			case 'Improved Initiative':
+				initBonus += 4;
+				break;
+			// Power Attack, Cleave, Mobility — combat-time choices, not static bonuses
+		}
+	}
+
+	const maxHp = Math.max(1, hitDie + conMod + hpBonus);
+
+	// ── Skills (class skills at rank 2 + feat bonuses) ────
 	const skills: Partial<Record<Skill, number>> = {};
 	for (const skill of CLASS_SKILLS[heroClass as HeroClass] ?? []) {
 		skills[skill] = 2;
+	}
+
+	// Feat-based skill bonuses
+	for (const feat of feats) {
+		switch (feat) {
+			case 'Alertness':
+				skills['Listen'] = (skills['Listen'] ?? 0) + 2;
+				skills['Spot'] = (skills['Spot'] ?? 0) + 2;
+				break;
+			case 'Educated':
+				skills['Knowledge (Technology)'] = (skills['Knowledge (Technology)'] ?? 0) + 2;
+				skills['Research'] = (skills['Research'] ?? 0) + 2;
+				break;
+			case 'Trustworthy':
+				skills['Diplomacy'] = (skills['Diplomacy'] ?? 0) + 2;
+				skills['Gather Information'] = (skills['Gather Information'] ?? 0) + 2;
+				break;
+		}
 	}
 
 	// ── Starting Gear ──────────────────────────────────────
@@ -108,11 +164,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		abilities,
 		hp: maxHp,
 		maxHp,
-		ac: 10 + dexMod + (inventory.find(i => i.type === 'armor')?.acBonus ?? 0),
-		initiative: dexMod,
+		ac: 10 + dexMod + acBonus + (inventory.find(i => i.type === 'armor')?.acBonus ?? 0),
+		initiative: dexMod + initBonus,
 		speed: 30,
 		skills,
-		feats: ['Simple Weapons Proficiency', CLASS_STARTING_FEAT[heroClass as HeroClass]],
+		feats,
 		inventory,
 		equippedWeapon: inventory.find(i => i.type === 'weapon')?.id,
 		equippedArmor: inventory.find(i => i.type === 'armor')?.id,
@@ -121,7 +177,22 @@ export const POST: RequestHandler = async ({ request }) => {
 		actionPoints: 5,
 		wealth: 100 + Math.floor(Math.random() * 300),
 		notes: [],
-		alive: true
+		alive: true,
+		inebriation: 0,
+		createdAt: new Date().toISOString(),
+		stats: {
+			enemiesKilled: 0,
+			damageDealt: 0,
+			damageTaken: 0,
+			moneyEarned: 0,
+			moneySpent: 0,
+			drinksConsumed: 0,
+			itemsFound: 0,
+			criticalHits: 0,
+			criticalFails: 0,
+			romances: 0,
+			actionsPerformed: 0
+		}
 	};
 
 	addCharacter(character);
@@ -146,11 +217,6 @@ export const POST: RequestHandler = async ({ request }) => {
 	return json({
 		playerId,
 		character,
-		abilityRolls: abilityRolls.map(r => ({
-			rolls: r.rolls,
-			dropped: r.dropped,
-			total: r.total
-		})),
 		message: `Welcome to Madison, ${characterName}. Something is very wrong here.`
 	});
 };

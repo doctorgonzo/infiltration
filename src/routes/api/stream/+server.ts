@@ -6,21 +6,27 @@
 import type { RequestHandler } from './$types';
 import { subscribe, getRecentLog } from '$lib/server/engine/state';
 
-export const GET: RequestHandler = async ({ request }) => {
+export const GET: RequestHandler = async ({ request, url }) => {
 	const encoder = new TextEncoder();
+	const skipHistory = url.searchParams.get('fresh') === '1';
 
 	const stream = new ReadableStream({
 		start(controller) {
 			// Send recent log entries so new connections see context
-			const recent = getRecentLog(50);
-			for (const entry of recent) {
-				try {
-					controller.enqueue(encoder.encode(`data: ${JSON.stringify(entry)}\n\n`));
-				} catch { break; }
+			// Skip if this is a fresh character (no old log replay)
+			let replayCount = 0;
+			if (!skipHistory) {
+				const recent = getRecentLog(50);
+				replayCount = recent.length;
+				for (const entry of recent) {
+					try {
+						controller.enqueue(encoder.encode(`data: ${JSON.stringify(entry)}\n\n`));
+					} catch { break; }
+				}
 			}
 
 			// Send a connected event
-			controller.enqueue(encoder.encode(`event: connected\ndata: ${JSON.stringify({ timestamp: new Date().toISOString(), count: recent.length })}\n\n`));
+			controller.enqueue(encoder.encode(`event: connected\ndata: ${JSON.stringify({ timestamp: new Date().toISOString(), count: replayCount })}\n\n`));
 
 			// Subscribe to new log entries
 			const unsubscribe = subscribe((entry) => {
