@@ -1289,9 +1289,11 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			if (char.stats) char.stats.romances++;
 			saveState();
 			// Drop a marker so processRomanceAction can build conversation history
+			// Hidden from players — only used internally by the romance history builder
 			addLogEntry({
 				timestamp: new Date().toISOString(),
 				type: 'system',
+				targetPlayer: '__director__',
 				text: `[ROMANCE STARTED] ${char.name} and ${displayName}`
 			});
 			return JSON.stringify({
@@ -1587,10 +1589,13 @@ export async function processAction(
 			})
 			.join('\n');
 
-		// Sanitized handoff log for the Director
+		// Sanitized handoff log for the Director — internal only, never shown to players.
+		// Uses targetPlayer: '__director__' so SSE filters drop it for all real clients
+		// but it stays in the game log for the Director's context window.
 		const handoffEntry: GameLogEntry = {
 			timestamp: new Date().toISOString(),
 			type: 'system',
+			targetPlayer: '__director__',
 			text: [
 				`[ROMANCE SCENE ENDED] ${character.name} had an intimate encounter with ${npcName}.`,
 				`The following is a summary of what happened during the scene (use this to determine where ${character.name} and ${npcName} are NOW, and what the current situation is):`,
