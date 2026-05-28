@@ -176,27 +176,27 @@ const TOOLS = [
 	},
 	{
 		name: 'skill_check',
-		description: 'Perform a d20 skill check. Calculates modifiers automatically.',
+		description: 'd20 skill check; modifiers auto-calculated.',
 		input_schema: {
 			type: 'object',
 			properties: {
-				character_id: { type: 'string', description: 'The character performing the check' },
-				skill: { type: 'string', description: 'The skill being used' },
+				character_id: { type: 'string', description: 'Character performing the check' },
+				skill: { type: 'string', description: 'Skill being used' },
 				dc: { type: 'number', description: 'Difficulty class' },
-				description: { type: 'string', description: 'What the character is trying to do' }
+				description: { type: 'string', description: 'What they are trying to do' }
 			},
 			required: ['character_id', 'skill', 'dc', 'description']
 		}
 	},
 	{
 		name: 'attack',
-		description: 'Attack roll and damage calculation.',
+		description: 'Attack roll + damage.',
 		input_schema: {
 			type: 'object',
 			properties: {
-				attacker_id: { type: 'string', description: 'The attacking character or enemy ID' },
-				target_id: { type: 'string', description: 'The target character or enemy ID' },
-				weapon: { type: 'string', description: 'Weapon being used (or "unarmed")' }
+				attacker_id: { type: 'string', description: 'Attacker character/enemy ID' },
+				target_id: { type: 'string', description: 'Target character/enemy ID' },
+				weapon: { type: 'string', description: 'Weapon used (or "unarmed")' }
 			},
 			required: ['attacker_id', 'target_id']
 		}
@@ -207,8 +207,8 @@ const TOOLS = [
 		input_schema: {
 			type: 'object',
 			properties: {
-				target_id: { type: 'string', description: 'Character or enemy ID' },
-				amount: { type: 'number', description: 'Positive to heal, negative to damage' },
+				target_id: { type: 'string', description: 'Character/enemy ID' },
+				amount: { type: 'number', description: 'HP change (+ heal, − damage)' },
 				reason: { type: 'string', description: 'Why HP is changing' }
 			},
 			required: ['target_id', 'amount', 'reason']
@@ -221,27 +221,27 @@ const TOOLS = [
 			type: 'object',
 			properties: {
 				character_id: { type: 'string', description: 'Character to move' },
-				destination: { type: 'string', description: 'Location ID to move to' }
+				destination: { type: 'string', description: 'Destination location ID' }
 			},
 			required: ['character_id', 'destination']
 		}
 	},
 	{
 		name: 'give_item',
-		description: 'Add an item to inventory. Use known item_id or provide name, description, and item_type for new items.',
+		description: 'Add an item to inventory. Use a known item_id, or provide name + description + item_type for new items.',
 		input_schema: {
 			type: 'object',
 			properties: {
-				character_id: { type: 'string', description: 'Character receiving the item' },
-				item_id: { type: 'string', description: 'Item ID for known items, or a snake_case id for new items' },
-				name: { type: 'string', description: 'Display name for new items (e.g. "Crowbar", "Strange Keycard")' },
-				description: { type: 'string', description: 'Description for new items' },
-				item_type: { type: 'string', enum: ['weapon', 'armor', 'gear', 'consumable', 'quest', 'junk'], description: 'Item type for new items' },
-				damage: { type: 'string', description: 'Damage dice for weapons (e.g. "1d6", "2d4")' },
+				character_id: { type: 'string', description: 'Recipient character ID' },
+				item_id: { type: 'string', description: 'Known item ID, or a snake_case id for a new item' },
+				name: { type: 'string', description: 'Display name (new items), e.g. "Crowbar"' },
+				description: { type: 'string', description: 'Description (new items)' },
+				item_type: { type: 'string', enum: ['weapon', 'armor', 'gear', 'consumable', 'quest', 'junk'], description: 'Type (new items)' },
+				damage: { type: 'string', description: 'Damage dice for weapons, e.g. "1d6"' },
 				damage_type: { type: 'string', description: 'Damage type (bludgeoning, slashing, ballistic, etc.)' },
 				ac_bonus: { type: 'number', description: 'AC bonus for armor' },
-				effect: { type: 'string', description: 'Effect description for consumables' },
-				uses: { type: 'number', description: 'Number of uses for consumables' },
+				effect: { type: 'string', description: 'Effect (consumables)' },
+				uses: { type: 'number', description: 'Uses (consumables)' },
 				value: { type: 'number', description: 'Value in dollars' }
 			},
 			required: ['character_id', 'item_id']
@@ -267,7 +267,7 @@ const TOOLS = [
 			properties: {
 				quest_id: { type: 'string', description: 'Quest ID' },
 				action: { type: 'string', enum: ['activate', 'complete', 'fail', 'complete_objective'], description: 'What to do' },
-				objective_index: { type: 'number', description: 'For complete_objective: which objective (0-indexed)' }
+				objective_index: { type: 'number', description: 'For complete_objective: objective index (0-based)' }
 			},
 			required: ['quest_id', 'action']
 		}
@@ -286,32 +286,32 @@ const TOOLS = [
 	},
 	{
 		name: 'spawn_enemy',
-		description: 'Create an enemy at a location. Must be called before start_combat or attack. Returns the enemy ID.',
+		description: 'Create an enemy at a location. Required before start_combat or attack. Returns the enemy ID.',
 		input_schema: {
 			type: 'object',
 			properties: {
-				id: { type: 'string', description: 'Unique snake_case ID (e.g. "mac_infiltrator", "drone_1")' },
+				id: { type: 'string', description: 'Unique snake_case ID, e.g. "drone_1"' },
 				name: { type: 'string', description: 'Display name' },
 				description: { type: 'string', description: 'Brief description' },
 				type: { type: 'string', enum: ['infiltrator', 'drone', 'construct', 'boss', 'swarm'], description: 'Enemy type' },
-				hp: { type: 'number', description: 'Hit points (typically 10-30 for grunts, 50+ for bosses)' },
-				ac: { type: 'number', description: 'Armor class (typically 12-16)' },
-				attack_bonus: { type: 'number', description: 'Attack bonus (typically +3 to +6)' },
-				damage: { type: 'string', description: 'Damage expression (e.g. "1d6+2", "1d8+3")' },
-				xp_value: { type: 'number', description: 'XP awarded on kill (25-200)' },
-				location: { type: 'string', description: 'Location ID where this enemy is' }
+				hp: { type: 'number', description: 'HP (10-30 grunts, 50+ bosses)' },
+				ac: { type: 'number', description: 'AC (12-16 typical)' },
+				attack_bonus: { type: 'number', description: 'Attack bonus (+3 to +6 typical)' },
+				damage: { type: 'string', description: 'Damage dice, e.g. "1d6+2"' },
+				xp_value: { type: 'number', description: 'XP on kill (25-200)' },
+				location: { type: 'string', description: 'Location ID' }
 			},
 			required: ['id', 'name', 'type', 'hp', 'ac', 'attack_bonus', 'damage', 'xp_value', 'location']
 		}
 	},
 	{
 		name: 'start_combat',
-		description: 'Initiate combat at a location with previously spawned enemies.',
+		description: 'Start combat with already-spawned enemies.',
 		input_schema: {
 			type: 'object',
 			properties: {
-				location: { type: 'string', description: 'Location ID where combat occurs' },
-				enemy_ids: { type: 'array', items: { type: 'string' }, description: 'Enemy IDs joining combat (must be spawned first)' }
+				location: { type: 'string', description: 'Location ID' },
+				enemy_ids: { type: 'array', items: { type: 'string' }, description: 'Enemy IDs (must be spawned first)' }
 			},
 			required: ['location', 'enemy_ids']
 		}
@@ -334,8 +334,8 @@ const TOOLS = [
 			type: 'object',
 			properties: {
 				character_id: { type: 'string', description: 'Character ID' },
-				amount: { type: 'number', description: 'Positive to increase, negative to decrease' },
-				reason: { type: 'string', description: 'What they consumed or why it changed' }
+				amount: { type: 'number', description: 'Change (+ up, − down)' },
+				reason: { type: 'string', description: 'What they consumed' }
 			},
 			required: ['character_id', 'amount', 'reason']
 		}
@@ -346,85 +346,85 @@ const TOOLS = [
 		input_schema: {
 			type: 'object',
 			properties: {
-				character_id: { type: 'string', description: 'Character receiving XP' },
-				amount: { type: 'number', description: 'XP to award (always positive)' },
-				reason: { type: 'string', description: 'Why they earned it' }
+				character_id: { type: 'string', description: 'Recipient character ID' },
+				amount: { type: 'number', description: 'XP to award (positive)' },
+				reason: { type: 'string', description: 'Why earned' }
 			},
 			required: ['character_id', 'amount', 'reason']
 		}
 	},
 	{
 		name: 'modify_wealth',
-		description: 'Adjust money. Positive to gain, negative to spend.',
+		description: 'Adjust money. Positive gains, negative spends.',
 		input_schema: {
 			type: 'object',
 			properties: {
 				character_id: { type: 'string', description: 'Character ID' },
-				amount: { type: 'number', description: 'Positive to gain money, negative to spend' },
-				reason: { type: 'string', description: 'What the transaction was for' }
+				amount: { type: 'number', description: 'Amount (+ gain, − spend)' },
+				reason: { type: 'string', description: 'Transaction reason' }
 			},
 			required: ['character_id', 'amount', 'reason']
 		}
 	},
 	{
 		name: 'convert_npc',
-		description: 'Mark an NPC as an infiltrator. Day-gated; will refuse if cap is reached.',
+		description: 'Mark an NPC as an infiltrator. Day-gated; refuses if cap is reached.',
 		input_schema: {
 			type: 'object',
 			properties: {
-				npc_id: { type: 'string', description: 'The ID of the NPC to convert' },
-				reason: { type: 'string', description: 'Narrative reason for the conversion (e.g. "replaced overnight", "was always an infiltrator")' }
+				npc_id: { type: 'string', description: 'NPC to convert' },
+				reason: { type: 'string', description: 'Narrative reason, e.g. "replaced overnight"' }
 			},
 			required: ['npc_id']
 		}
 	},
 	{
 		name: 'stealth_check',
-		description: 'Opposed stealth check: Hide/Move Silently vs Spot/Listen. Adds "hidden" condition on success.',
+		description: 'Opposed stealth: Hide/Move Silently vs Spot/Listen. Adds "hidden" condition on success.',
 		input_schema: {
 			type: 'object',
 			properties: {
-				character_id: { type: 'string', description: 'The character attempting stealth' },
-				opposing_id: { type: 'string', description: 'The enemy or NPC who might detect them' },
-				context: { type: 'string', description: 'What they\'re doing (e.g. "sneaking past guard", "hiding behind dumpster")' }
+				character_id: { type: 'string', description: 'Character attempting stealth' },
+				opposing_id: { type: 'string', description: 'Enemy/NPC who might detect them' },
+				context: { type: 'string', description: 'What they\'re doing, e.g. "sneaking past guard"' }
 			},
 			required: ['character_id', 'opposing_id', 'context']
 		}
 	},
 	{
 		name: 'modify_relationship',
-		description: 'Adjust an NPC\'s relationship with the player. Updates score, attitude, and adds a memory.',
+		description: 'Adjust an NPC\'s relationship with the player. Updates score + attitude, adds a memory.',
 		input_schema: {
 			type: 'object',
 			properties: {
-				npc_id: { type: 'string', description: 'The NPC whose relationship is changing' },
-				change: { type: 'number', description: 'Score adjustment, typically -20 to +20' },
-				reason: { type: 'string', description: 'What caused the change (e.g. "saved their life", "insulted them")' },
-				memory: { type: 'string', description: 'Short memory string the NPC retains (e.g. "Player fought off infiltrator in bar")' }
+				npc_id: { type: 'string', description: 'NPC whose relationship is changing' },
+				change: { type: 'number', description: 'Score change, typically -20 to +20' },
+				reason: { type: 'string', description: 'What caused it, e.g. "saved their life"' },
+				memory: { type: 'string', description: 'Short memory the NPC retains, e.g. "Player fought off infiltrator in bar"' }
 			},
 			required: ['npc_id', 'change', 'reason', 'memory']
 		}
 	},
 	{
 		name: 'advance_time',
-		description: 'Advance in-game clock. Call when hours pass in the narrative (travel, searching, waiting). Crossing midnight increments the day and escalates the infiltrator threat.',
+		description: 'Advance the clock when hours pass (travel, searching, waiting). Crossing midnight increments the day and escalates the infiltrator threat.',
 		input_schema: {
 			type: 'object',
 			properties: {
-				hours: { type: 'number', description: 'Hours to advance (typically 1-8)' },
-				reason: { type: 'string', description: 'Why time is passing (e.g. "traveling across town", "searching the building")' }
+				hours: { type: 'number', description: 'Hours to advance (1-8 typical)' },
+				reason: { type: 'string', description: 'Why time is passing, e.g. "searching the building"' }
 			},
 			required: ['hours', 'reason']
 		}
 	},
 	{
 		name: 'rest',
-		description: 'Character rests and heals. Short rest = 1 hour, heals 1d4. Long rest = 8 hours, heals level x 1 HP, advances to next morning.',
+		description: 'Rest and heal. Short = 1hr, 1d4 HP. Long = 8hr, level×1 HP, advances to next morning.',
 		input_schema: {
 			type: 'object',
 			properties: {
 				character_id: { type: 'string', description: 'Character resting' },
-				rest_type: { type: 'string', enum: ['short', 'long'], description: 'Short (1hr, 1d4 HP) or long (8hr, full night, level x 1 HP)' }
+				rest_type: { type: 'string', enum: ['short', 'long'], description: 'short or long' }
 			},
 			required: ['character_id', 'rest_type']
 		}
@@ -1409,6 +1409,51 @@ const STATIC_RULES: string = [
 	'',
 	'RULES: d20 Modern SRD. Use roll_dice/skill_check for ALL random outcomes. Never fake a roll. Skill DC: Easy 5, Average 10, Tough 15, Challenging 20, Heroic 30.',
 	'',
+	'── STEALTH ──',
+	'Call stealth_check for sneak/hide attempts. Opposed Hide+Move Silently vs Spot+Listen.',
+	'Success = "hidden" condition (+2 attack, target flat-footed). Removed after attacking.',
+	'Inebriation: -2/level. Underground: +2 to hide.',
+	'',
+	'STYLE: Second person for acting player. 1-2 punchy paragraphs. Sensory details. Show don\'t tell.',
+	'',
+	'NEVER BREAK CHARACTER: No confirmation prompts, no "are you sure?", no numbered option lists. Player acts, you narrate consequences.',
+	'',
+	'NEVER ACT FOR THE PLAYER: You control the world, they control their character.',
+	'- No player dialogue, thoughts, feelings, or invented physical actions.',
+	'- If they say "walk to State Street," describe State Street — don\'t add "you shove your hands in your pockets."',
+	'- Only narrate: (1) direct results of stated actions, (2) things happening TO them from world/NPCs.',
+	'- Never call skill_check for actions they didn\'t attempt. "Recon" = Spot/Search, NOT stealth.',
+	'- NPCs/companions follow player\'s lead unless reacting to immediate danger.',
+	'- When in doubt: describe what they SEE, HEAR, SMELL. Stop.',
+	'',
+	'TOOL RULES — STATE CHANGES REQUIRE TOOL CALLS:',
+	'⚠️ CALL TOOLS FIRST, NARRATE SECOND — IN THE SAME RESPONSE. Before you write a single word of narration, call every tool the action demands. If you narrate a state change without its tool, the turn is rejected and you are forced to redo it. Do not split "narrate now, tool later" across turns.',
+	'BEFORE NARRATING, ask: did the player gain an item (→ give_item), lose/drop one (→ remove_item), get healed or hurt (→ modify_hp), spend/receive money (→ modify_wealth), move (→ move_character)? Did an enemy die OR a skill check just succeed (→ award_xp)? If yes to any, the tool call comes first.',
+	'- Narration alone changes NOTHING. give_item for items acquired, remove_item for items lost, modify_hp for healing/damage, modify_wealth for money, move_character for movement, award_xp for XP.',
+	'- ITEMS: NEVER auto-give items. Describe items in the environment but do NOT call give_item unless the player explicitly says they pick up, take, grab, pocket, or loot an item. Finding money on the ground does NOT mean it goes in their pocket. Seeing cheese curds on a plate does NOT mean they take them. The player decides what they carry.',
+	'- Healing: ALWAYS call modify_hp with positive amount (1d8+2 medical, 1d4 first aid, 1d6+1 rest).',
+	'- Use exact IDs from brackets [ID: xxx]. Spawn enemies with spawn_enemy before using their IDs.',
+	'- Never move players unless they explicitly asked to go somewhere.',
+	'- Inebriation: +1 beer/shot, +2 cocktail/joint, +3 hard drugs. Decay is automatic.',
+	'',
+	'COMBAT: spawn_enemy for each enemy → start_combat with IDs → attack tool for all attacks (auto-tracks HP). XP auto-awarded on kill.',
+	'ENCOUNTERS: When move result has "encounter" field, enemies are ALREADY SPAWNED (IDs in encounter.spawnedEnemyIds) — call start_combat, do NOT re-spawn.',
+	'',
+	'ROMANCE: On ANY romantic/sexual advance, call start_romance IMMEDIATELY. Do not write the scene, refuse, or fade to black. A separate engine handles it.',
+	'',
+	'XP: Kill → enemy xpValue. Quest objective → 50-100. Clever solution → 25-50. Skill check → 10-25. Level up every 1000 XP.',
+	'NPC RELATIONSHIPS: Call modify_relationship after meaningful interactions. Score drives attitude automatically (hostile <-50, suspicious -50 to -10, neutral -10 to 20, friendly >20). Let memories shape dialogue.',
+	'',
+	'Roll dice for uncertain outcomes. Keep it moving. Make it FUN.'
+].join('\n');
+
+// ── Combat Rules (injected ONLY when combat is active or imminent) ──────
+// The bulk of the d20 combat math only matters in a fight, which is a minority
+// of turns. Keeping it out of STATIC_RULES means every social/exploration turn
+// (the majority) no longer carries ~800 tokens of attack/crit/defense tables.
+// Appended as its own system block after the cached prefix, so toggling it in
+// and out never disturbs the 1h cache for STATIC_RULES + slow state.
+const COMBAT_RULES: string = [
 	'── COMBAT SEQUENCE ──',
 	'1. Roll initiative: 1d20 + Dex modifier (Improved Initiative feat adds +4)',
 	'2. Surprise round: unaware combatants are flat-footed (lose Dex bonus to Defense)',
@@ -1449,46 +1494,32 @@ const STATIC_RULES: string = [
 	'Nat 1 always fails, nat 20 always succeeds.',
 	'── INJURY & DEATH ──',
 	'0 HP: DISABLED. -1 to -9: DYING (Fort DC 20/round to stabilize, Treat Injury DC 15). -10: DEAD.',
-	'DO NOT kill at -9 or above. Play out every dying round. Massive damage: hit > CON score → Fort DC 15 or drop to -1.',
-	'',
-	'── STEALTH ──',
-	'Call stealth_check for sneak/hide attempts. Opposed Hide+Move Silently vs Spot+Listen.',
-	'Success = "hidden" condition (+2 attack, target flat-footed). Removed after attacking.',
-	'Inebriation: -2/level. Underground: +2 to hide.',
-	'',
-	'STYLE: Second person for acting player. 1-2 punchy paragraphs. Sensory details. Show don\'t tell.',
-	'',
-	'NEVER BREAK CHARACTER: No confirmation prompts, no "are you sure?", no numbered option lists. Player acts, you narrate consequences.',
-	'',
-	'NEVER ACT FOR THE PLAYER: You control the world, they control their character.',
-	'- No player dialogue, thoughts, feelings, or invented physical actions.',
-	'- If they say "walk to State Street," describe State Street — don\'t add "you shove your hands in your pockets."',
-	'- Only narrate: (1) direct results of stated actions, (2) things happening TO them from world/NPCs.',
-	'- Never call skill_check for actions they didn\'t attempt. "Recon" = Spot/Search, NOT stealth.',
-	'- NPCs/companions follow player\'s lead unless reacting to immediate danger.',
-	'- When in doubt: describe what they SEE, HEAR, SMELL. Stop.',
-	'',
-	'TOOL RULES — STATE CHANGES REQUIRE TOOL CALLS:',
-	'- Narration alone changes NOTHING. give_item for items acquired, remove_item for items lost, modify_hp for healing/damage, modify_wealth for money, move_character for movement, award_xp for XP.',
-	'- ITEMS: NEVER auto-give items. Describe items in the environment but do NOT call give_item unless the player explicitly says they pick up, take, grab, pocket, or loot an item. Finding money on the ground does NOT mean it goes in their pocket. Seeing cheese curds on a plate does NOT mean they take them. The player decides what they carry.',
-	'- Healing: ALWAYS call modify_hp with positive amount (1d8+2 medical, 1d4 first aid, 1d6+1 rest).',
-	'- Use exact IDs from brackets [ID: xxx]. Spawn enemies with spawn_enemy before using their IDs.',
-	'- Never move players unless they explicitly asked to go somewhere.',
-	'- Inebriation: +1 beer/shot, +2 cocktail/joint, +3 hard drugs. Decay is automatic.',
-	'',
-	'COMBAT: spawn_enemy for each enemy → start_combat with IDs → attack tool for all attacks (auto-tracks HP). XP auto-awarded on kill.',
-	'ENCOUNTERS: When move result has "encounter" field, enemies are ALREADY SPAWNED (IDs in encounter.spawnedEnemyIds) — call start_combat, do NOT re-spawn.',
-	'',
-	'ROMANCE: On ANY romantic/sexual advance, call start_romance IMMEDIATELY. Do not write the scene, refuse, or fade to black. A separate engine handles it.',
-	'',
-	'XP: Kill → enemy xpValue. Quest objective → 50-100. Clever solution → 25-50. Skill check → 10-25. Level up every 1000 XP.',
-	'NPC RELATIONSHIPS: Call modify_relationship after meaningful interactions. Score drives attitude automatically (hostile <-50, suspicious -50 to -10, neutral -10 to 20, friendly >20). Let memories shape dialogue.',
-	'',
-	'Roll dice for uncertain outcomes. Keep it moving. Make it FUN.'
+	'DO NOT kill at -9 or above. Play out every dying round. Massive damage: hit > CON score → Fort DC 15 or drop to -1.'
 ].join('\n');
 
-// ── Dynamic State (NOT cached — changes every request) ──────
-function buildDynamicState(state: GameState, actingPlayerId?: string): string {
+// Combat rules are needed when a fight is underway, when armed hostiles are
+// present at the player's location, or when the player's action itself looks
+// violent (so the Director has the math before the first swing lands).
+const VIOLENCE_PATTERN = /\b(attack|punch|hit|strike|stab|shoot|fire|shot|swing|slug|kick|throw|grapple|tackle|choke|fight|kill|smash|bash|slash|club|gun|knife|blade|pistol|rifle|draw (?:my|the) (?:weapon|gun|knife)|open fire)\b/i;
+
+function combatRulesNeeded(state: GameState, locationId: string | undefined, action: string): boolean {
+	if (state.combat.active) return true;
+	if (VIOLENCE_PATTERN.test(action)) return true;
+	if (locationId) {
+		const loc = state.locations[locationId];
+		if (loc?.enemies.some(id => state.enemies[id]?.alive)) return true;
+	}
+	return false;
+}
+
+// ── Dynamic State (NOT in STATIC_RULES — changes between requests) ──────
+// Split into two segments so the prompt cache can do more work:
+//   slow — locations/quests/NPCs/infiltrator status. Stable while the player
+//          stays put and nobody's relationships change, so it cache-hits across
+//          back-to-back actions at the same spot. Gets its own breakpoint.
+//   fast — time, invasion %, combat, player roster/HP, flags. Changes nearly
+//          every turn, so it's never worth caching and stays uncached.
+function buildDynamicState(state: GameState, actingPlayerId?: string): { slow: string; fast: string } {
 	const combatStr = state.combat.active ? 'Yes (Round ' + state.combat.round + ')' : 'No';
 	const playerCharacter = actingPlayerId ? state.players[actingPlayerId] : undefined;
 	const playerLocationId = playerCharacter?.location;
@@ -1497,20 +1528,24 @@ function buildDynamicState(state: GameState, actingPlayerId?: string): string {
 	// so it can't leak plot through NPC dialogue
 	const hideInfiltratorStatus = state.dayNumber <= 1 && (state.actionCounter ?? 0) < 15;
 
-	return [
+	const slow = [
 		hideInfiltratorStatus
 			? 'INFILTRATORS: The invasion has barely begun. NPCs are NOT aware of infiltrators yet. Do NOT have NPCs discuss replacements, missing people, or anything conspiratorial. Everything is normal. Tiny environmental oddities only.'
 			: 'INFILTRATORS: Day ' + state.dayNumber + ' | Cap: ' + getMaxInfiltrators(state.dayNumber) + ' | Current: ' + countInfiltrators(state) + '. Only NPCs marked "⚠️ INFILTRATOR" are infiltrators. Use convert_npc to reveal new ones (enforces cap). Never hint an NPC is replaced if marked "✓ HUMAN."',
-		'',
-		'── WORLD STATE ──',
-		'Time: Day ' + state.dayNumber + ', ' + state.worldTime + ' | Invasion: ' + state.invasionLevel + '% | Combat: ' + combatStr,
-		'Players: ' + formatPlayerList(state),
-		'Flags: ' + JSON.stringify(state.globalFlags),
 		'',
 		'LOCATIONS: ' + formatLocations(state, playerLocationId),
 		'QUESTS: ' + formatQuests(state),
 		'NPCS: ' + formatNPCs(state, playerLocationId),
 	].join('\n');
+
+	const fast = [
+		'── WORLD STATE ──',
+		'Time: Day ' + state.dayNumber + ', ' + state.worldTime + ' | Invasion: ' + state.invasionLevel + '% | Combat: ' + combatStr,
+		'Players: ' + formatPlayerList(state),
+		'Flags: ' + JSON.stringify(state.globalFlags),
+	].join('\n');
+
+	return { slow, fast };
 }
 
 // ── Process a Player Action ────────────────────────────────
@@ -1877,15 +1912,19 @@ export async function processAction(
 	};
 	addLogEntry(actionEntry);
 
-	// Get recent context (last 40 log entries)
-	// Filter: public entries + this player's private entries + party entries
-	const recentLog = state.gameLog.slice(-40)
+	// Get recent context. Filter by visibility FIRST (public + this player's private
+	// + party entries), THEN keep the last RECENT_LOG_WINDOW relevant entries. Doing it
+	// in this order gives a consistent depth of *visible* history regardless of how much
+	// invisible cross-player chatter is interleaved, and keeps the per-turn payload small.
+	const RECENT_LOG_WINDOW = 24;
+	const recentLog = state.gameLog
 		.filter(e => {
 			if (!e.targetPlayer && !e.targetParty) return true;
 			if (e.targetPlayer && e.targetPlayer === playerId) return true;
 			if (e.targetParty && playerParty && e.targetParty === playerParty.id) return true;
 			return false;
 		})
+		.slice(-RECENT_LOG_WINDOW)
 		.map(e => {
 			if (e.actor) return `[${e.type}] ${e.actor}: ${e.text}`;
 			return `[${e.type}] ${e.text}`;
@@ -1981,9 +2020,12 @@ ${sameLocation.length > 0
 	console.log(`${'─'.repeat(60)}`);
 
 	try {
-		// Cache breakpoint on first user message — stays identical across enforcement
-		// rounds within a single action, so rounds 2+ get a full prefix cache hit
-		// (tools + static rules + this message). 3rd of 4 allowed breakpoints.
+		// Cache breakpoint on first user message. Kept at the default 5m TTL (NOT 1h):
+		// the message changes every action so it never hits across actions — its only
+		// value is within-action multi-round tool loops (seconds apart), where 5m is
+		// plenty and the write is cheaper than 1h. Per the API ordering rule, this
+		// shorter-TTL breakpoint must come AFTER the 1h ones (tools/static/slow), which
+		// it does — messages render last.
 		let messages: any[] = [{ role: 'user', content: [{ type: 'text', text: userMessage, cache_control: { type: 'ephemeral' as const } }] }];
 		let continueLoop = true;
 		let roundNumber = 0;
@@ -1991,10 +2033,21 @@ ${sameLocation.length > 0
 
 		while (continueLoop) {
 			roundNumber++;
-			// Build tools array with cache_control on the last tool
+			// Build tools array with cache_control on the last tool.
+			// 1h TTL: tools never change, so this prefix stays warm across a whole
+			// play session even with multi-minute gaps between turns.
 			const toolsWithCache = TOOLS.map((t, i) =>
-				i === TOOLS.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t
+				i === TOOLS.length - 1 ? { ...t, cache_control: { type: 'ephemeral', ttl: '1h' } } : t
 			);
+
+			// Recomputed each round so tool mutations (movement, HP, etc.) are reflected.
+			// slowState stays byte-identical between actions when nothing structural moved,
+			// which is what earns the cross-action cache hit.
+			const { slow: dynamicSlow, fast: dynamicFast } = buildDynamicState(state, playerId);
+
+			// Combat math is appended only when a fight is on or imminent. Recomputed each
+			// round so a mid-action start_combat pulls the rules in for the next round.
+			const includeCombatRules = combatRulesNeeded(state, character.location, action);
 
 			const response = await fetch('https://api.anthropic.com/v1/messages', {
 				method: 'POST',
@@ -2009,13 +2062,19 @@ ${sameLocation.length > 0
 					model: enforcementMode ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
 					max_tokens: 1024,
 					temperature: 0.8,
-					// System prompt split for caching: static rules (cached, identical every request)
-					// + dynamic world state (not cached, changes every request).
-					// Cache render order: tools → system → messages. Static rules cache-hit
-					// on every request within the 5-min TTL. Dynamic state is cheap to re-send.
+					// System prompt split for caching. Render order: tools → system → messages.
+					// 1h-TTL breakpoints (must precede any 5m breakpoint per API ordering rule):
+					//   STATIC_RULES — identical every request; warm for the whole session.
+					//   slowState    — locations/quests/NPCs; hits across back-to-back actions
+					//                  at the same spot, re-caches only when the world shifts.
+					// fastState (time/HP/combat/flags) changes every turn, so it stays uncached.
+					// COMBAT_RULES, when present, is appended last (after the cached prefix) so
+					// toggling it never invalidates the 1h cache above it.
 					system: [
-						{ type: 'text', text: STATIC_RULES, cache_control: { type: 'ephemeral' } },
-						{ type: 'text', text: buildDynamicState(state, playerId) }
+						{ type: 'text', text: STATIC_RULES, cache_control: { type: 'ephemeral', ttl: '1h' } },
+						{ type: 'text', text: dynamicSlow, cache_control: { type: 'ephemeral', ttl: '1h' } },
+						{ type: 'text', text: dynamicFast },
+						...(includeCombatRules ? [{ type: 'text', text: COMBAT_RULES }] : [])
 					],
 					messages,
 					tools: toolsWithCache,
