@@ -1340,19 +1340,22 @@ function formatRelationship(n: import('$lib/types').NPC): string {
 }
 
 function formatNPCs(state: GameState, playerLocationId?: string): string {
+	// On Day 1 with few actions taken, hide infiltrator status from the Director.
+	// This prevents the Director from leaking plot info through NPC dialogue.
+	// The Director learns who's an infiltrator as the game progresses.
+	const hideInfiltratorStatus = state.dayNumber <= 1 && (state.actionCounter ?? 0) < 15;
+
 	if (!playerLocationId) {
-		// Fallback: all alive NPCs (original behavior)
 		return Object.values(state.npcs)
 			.filter(n => n.alive)
 			.map(n => {
 				const locName = state.locations[n.location]?.name ?? 'unknown';
-				const status = n.isInfiltrator ? '⚠️ INFILTRATOR' : '✓ HUMAN';
+				const status = hideInfiltratorStatus ? '' : (n.isInfiltrator ? ' — ⚠️ INFILTRATOR' : ' — ✓ HUMAN');
 				const rel = formatRelationship(n);
-				return `- ${n.name} [${n.id}] at ${locName} (${n.attitude}${rel}) — ${status}`;
+				return `- ${n.name} [${n.id}] at ${locName} (${n.attitude}${rel})${status}`;
 			})
 			.join('\n');
 	}
-	// Collect NPC IDs that are quest givers for active quests
 	const questGiverIds = new Set(
 		Object.values(state.quests)
 			.filter(q => q.status === 'active')
@@ -1362,10 +1365,10 @@ function formatNPCs(state: GameState, playerLocationId?: string): string {
 		.filter(n => n.alive && (n.location === playerLocationId || questGiverIds.has(n.id)))
 		.map(n => {
 			const locName = state.locations[n.location]?.name ?? 'unknown';
-			const status = n.isInfiltrator ? '⚠️ INFILTRATOR' : '✓ HUMAN';
+			const status = hideInfiltratorStatus ? '' : (n.isInfiltrator ? ' — ⚠️ INFILTRATOR' : ' — ✓ HUMAN');
 			const tag = n.location === playerLocationId ? '' : ' [QUEST GIVER]';
 			const rel = formatRelationship(n);
-			return `- ${n.name} [${n.id}] at ${locName} (${n.attitude}${rel}) — ${status}${tag}`;
+			return `- ${n.name} [${n.id}] at ${locName} (${n.attitude}${rel})${status}${tag}`;
 		})
 		.join('\n');
 }
@@ -1380,7 +1383,14 @@ const STATIC_RULES: string = [
 	'',
 	'TONE: Darkly funny. Think Shaun of the Dead meets Invasion of the Body Snatchers meets a Midwestern sensibility. The horror is real but the humor comes from how absurdly mundane everything is on the surface. Wisconsin references are encouraged. The infiltrators\' greatest weakness is that they can\'t handle genuine human weirdness.',
 	'',
-	'PACING: Start NORMAL. NPCs don\'t volunteer weirdness. Let the player discover the horror through small environmental details. Mundane first, creepy later.',
+	'── PACING (CRITICAL — READ THIS) ──',
+	'The first few interactions MUST be mundane. This is a slow burn, not an exposition dump.',
+	'- Day 1, early: NOBODY talks about infiltrators, replacements, or anything weird. NPCs have normal bar conversations. Gossip, sports, weather, work complaints. The world is NORMAL.',
+	'- Day 1, mid: Tiny environmental oddities ONLY. A flickering light. A drink that tastes slightly off. An NPC who pauses too long before laughing. The player notices — NPCs do NOT.',
+	'- Day 1, late: ONE NPC might mention something "off" about someone — but casually, not as a plot briefing. "Hey, have you noticed Dave\'s been kinda weird lately?" Not "THREE PEOPLE HAVE BEEN REPLACED."',
+	'- Day 2+: Tension builds. NPCs start comparing notes. But they\'re scared and uncertain, not delivering intel briefings.',
+	'- NEVER have NPCs dump plot exposition in the opening scene. NEVER have NPCs count infiltrators or name specific replacements unless the player has personally investigated and discovered them.',
+	'- The player should EARN every piece of the conspiracy through exploration, not have it handed to them at the bar.',
 	'',
 	'RULES: d20 Modern SRD. Use roll_dice/skill_check for ALL random outcomes. Never fake a roll. Skill DC: Easy 5, Average 10, Tough 15, Challenging 20, Heroic 30.',
 	'',
@@ -1468,8 +1478,14 @@ function buildDynamicState(state: GameState, actingPlayerId?: string): string {
 	const playerCharacter = actingPlayerId ? state.players[actingPlayerId] : undefined;
 	const playerLocationId = playerCharacter?.location;
 
+	// On Day 1 with few actions, hide infiltrator details from the Director
+	// so it can't leak plot through NPC dialogue
+	const hideInfiltratorStatus = state.dayNumber <= 1 && (state.actionCounter ?? 0) < 15;
+
 	return [
-		'INFILTRATORS: Day ' + state.dayNumber + ' | Cap: ' + getMaxInfiltrators(state.dayNumber) + ' | Current: ' + countInfiltrators(state) + '. Only NPCs marked "⚠️ INFILTRATOR" are infiltrators. Use convert_npc to reveal new ones (enforces cap). Never hint an NPC is replaced if marked "✓ HUMAN."',
+		hideInfiltratorStatus
+			? 'INFILTRATORS: The invasion has barely begun. NPCs are NOT aware of infiltrators yet. Do NOT have NPCs discuss replacements, missing people, or anything conspiratorial. Everything is normal. Tiny environmental oddities only.'
+			: 'INFILTRATORS: Day ' + state.dayNumber + ' | Cap: ' + getMaxInfiltrators(state.dayNumber) + ' | Current: ' + countInfiltrators(state) + '. Only NPCs marked "⚠️ INFILTRATOR" are infiltrators. Use convert_npc to reveal new ones (enforces cap). Never hint an NPC is replaced if marked "✓ HUMAN."',
 		'',
 		'── WORLD STATE ──',
 		'Time: Day ' + state.dayNumber + ', ' + state.worldTime + ' | Invasion: ' + state.invasionLevel + '% | Combat: ' + combatStr,
