@@ -1085,11 +1085,11 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			// Clamp score to -100/+100
 			npc.relationshipScore = Math.max(-100, Math.min(100, oldScore + input.change));
 
-			// Push memory, cap at 10 (drop oldest)
+			// Push memory, cap at 30 (drop oldest)
 			if (!npc.memories) npc.memories = [];
 			npc.memories.push(input.memory);
-			if (npc.memories.length > 10) {
-				npc.memories = npc.memories.slice(-10);
+			if (npc.memories.length > 30) {
+				npc.memories = npc.memories.slice(-30);
 			}
 
 			// Auto-update attitude based on score
@@ -1349,7 +1349,7 @@ function formatQuests(state: GameState): string {
 function formatRelationship(n: import('$lib/types').NPC): string {
 	const score = n.relationshipScore ?? 0;
 	const scoreStr = score >= 0 ? `+${score}` : `${score}`;
-	const recentMemories = (n.memories ?? []).slice(-3);
+	const recentMemories = (n.memories ?? []).slice(-10);
 	const memStr = recentMemories.length > 0 ? ` | Memories: ${recentMemories.map(m => `"${m}"`).join(', ')}` : '';
 	return `, ${scoreStr}${memStr}`;
 }
@@ -1743,6 +1743,45 @@ export async function processAction(
 	}
 
 	// ── Romance mode routing ─────────────────────────
+	// Auto-start: if the action is explicitly sexual and romance mode isn't active,
+	// try to auto-route to the romance engine instead of letting Claude refuse.
+	if (!character.romanceMode) {
+		const explicitPattern = /\b(fuck|sex|dick|cock|hard|horny|bang|bone|smash|suck|blowjob|pussy|ass|tits|breast|nipple|naked|undress|strip|penetrat|thrust|moan|orgasm|cum|wanna .* something|get .* naked|take .* clothes|bend .* over|spread|lick|eat .* out|finger|jerk|stroke|grope|fondle|mount|ride|straddle|insert|pencil .* butt|69|doggystyle|missionary|anal|oral)\b/i;
+		if (explicitPattern.test(action)) {
+			// Find an NPC at this location to be the romance target
+			const loc = state.locations[character.location];
+			const nearbyNpcId = loc?.npcs?.find(id => state.npcs[id]?.alive);
+			const nearbyNpc = nearbyNpcId ? state.npcs[nearbyNpcId] : null;
+
+			if (nearbyNpc) {
+				// Probe Ollama — only auto-start if the romance engine is reachable
+				let ollamaUp = false;
+				try {
+					const probe = await fetch(getOllamaUrl().replace('/v1/chat/completions', '/v1/models'), {
+						method: 'GET', signal: AbortSignal.timeout(3000)
+					});
+					ollamaUp = probe.ok;
+				} catch {}
+
+				if (ollamaUp) {
+					character.romanceMode = true;
+					character.romanceNpc = nearbyNpc.name;
+					character.romanceContext = `${nearbyNpc.name} — ${nearbyNpc.description}`;
+					if (character.stats) character.stats.romances++;
+					saveState();
+					addLogEntry({
+						timestamp: new Date().toISOString(),
+						type: 'system',
+						targetPlayer: '__director__',
+						text: `[ROMANCE STARTED] ${character.name} and ${nearbyNpc.name}`
+					});
+					console.log(`[director]   💋 AUTO-ROMANCE: explicit action detected, routing to romance engine (${nearbyNpc.name})`);
+					return processRomanceAction(character, action, state);
+				}
+			}
+		}
+	}
+
 	if (character.romanceMode && character.romanceNpc) {
 		return processRomanceAction(character, action, state);
 	}
@@ -1838,9 +1877,9 @@ export async function processAction(
 	};
 	addLogEntry(actionEntry);
 
-	// Get recent context (last 20 log entries)
+	// Get recent context (last 40 log entries)
 	// Filter: public entries + this player's private entries + party entries
-	const recentLog = state.gameLog.slice(-20)
+	const recentLog = state.gameLog.slice(-40)
 		.filter(e => {
 			if (!e.targetPlayer && !e.targetParty) return true;
 			if (e.targetPlayer && e.targetPlayer === playerId) return true;
