@@ -447,7 +447,7 @@ const TOOLS = [
 
 // ── Tool Execution ─────────────────────────────────────────
 
-function executeTool(name: string, input: any, state: GameState, actingPlayerId?: string): string {
+async function executeTool(name: string, input: any, state: GameState, actingPlayerId?: string): Promise<string> {
 	// God mode: override all dice rolls to nat 20
 	const isGodMode = actingPlayerId ? state.players[actingPlayerId]?.godMode === true : false;
 
@@ -1270,6 +1270,19 @@ function executeTool(name: string, input: any, state: GameState, actingPlayerId?
 			}
 
 			const displayName = input.npc_name || state.npcs[input.npc_id]?.name || input.npc_id.replace(/_/g, ' ');
+
+			// Pre-check: can we actually reach the romance model?
+			// Don't trap the player in romance mode if Ollama is unreachable.
+			try {
+				const probe = await fetch(getOllamaUrl().replace('/v1/chat/completions', '/v1/models'), {
+					method: 'GET',
+					signal: AbortSignal.timeout(3000)
+				});
+				if (!probe.ok) throw new Error('probe failed');
+			} catch {
+				return JSON.stringify({ error: `Romance engine offline — narrate the flirtation yourself but do NOT enter romance mode. ${displayName} is interested but the moment doesn't fully land right now.` });
+			}
+
 			char.romanceMode = true;
 			char.romanceNpc = displayName;
 			char.romanceContext = input.context;
@@ -1870,7 +1883,7 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 				// Execute tools and collect results
 				const toolResults: any[] = [];
 				for (const toolBlock of toolUseBlocks) {
-					const result = executeTool(toolBlock.name, toolBlock.input, state, playerId);
+					const result = await executeTool(toolBlock.name, toolBlock.input, state, playerId);
 					console.log(`[director]   ✅ ${toolBlock.name} → ${result.substring(0, 150)}`);
 
 					// Log dice rolls with human-readable text (skip if tool returned an error)
@@ -1990,7 +2003,12 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 
 // ── Local Model Romance Handler ──────────────────────────
 
-const OLLAMA_URL = 'http://localhost:11434/v1/chat/completions';
+// Romance model endpoint — configurable via env var for Cloudflare Tunnel / remote access.
+// Local: http://localhost:11434/v1/chat/completions
+// Remote: set OLLAMA_URL env var to your tunnel URL (e.g. https://xyz.trycloudflare.com/v1/chat/completions)
+function getOllamaUrl(): string {
+	return env.OLLAMA_URL || process.env.OLLAMA_URL || 'http://localhost:11434/v1/chat/completions';
+}
 const ROMANCE_MODEL = 'leeplenty/lumimaid-v0.2:8b';
 
 async function processRomanceAction(
@@ -2108,7 +2126,7 @@ async function processRomanceAction(
 		: mergedHistory;
 
 	try {
-		const response = await fetch(OLLAMA_URL, {
+		const response = await fetch(getOllamaUrl(), {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
