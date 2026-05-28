@@ -445,6 +445,7 @@ export function createInitialWorld(): GameState {
 			currentTurn: 0,
 			location: ''
 		},
+		parties: {},
 		globalFlags: {
 			'invasion_discovered': false,
 			'capitol_dungeon_found': false,

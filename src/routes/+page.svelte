@@ -198,6 +198,13 @@
 		{ command: '/stats', label: 'Stats', description: 'View character sheet', category: 'info' },
 		{ command: '/admin', label: 'Admin', description: 'Toggle god mode (1000 HP, always nat 20)', category: 'info' },
 		{ command: '/end', label: 'End Scene', description: 'Exit romance mode', category: 'info' },
+		{ command: '/party', label: 'Party', description: 'Show party info', category: 'info' },
+		{ command: '/party create', label: 'Create Party', description: 'Form a new party', category: 'info' },
+		{ command: '/party invite', label: 'Invite', description: 'Invite a player to your party', category: 'info' },
+		{ command: '/party join', label: 'Join Party', description: 'Accept a party invite', category: 'info' },
+		{ command: '/party leave', label: 'Leave Party', description: 'Leave your current party', category: 'info' },
+		{ command: '/party disband', label: 'Disband', description: 'Disband party (leader only)', category: 'info' },
+		{ command: '/party kick', label: 'Kick', description: 'Remove a player from party', category: 'info' },
 	];
 
 	const ALL_SKILLS = [
@@ -467,8 +474,9 @@
 		eventSource.onmessage = (event) => {
 			try {
 				const entry: GameLogEntry = JSON.parse(event.data);
-				// Client-side safety filter: skip entries targeted to other players
+				// Client-side safety filter: skip entries not meant for this player
 				if (entry.targetPlayer && entry.targetPlayer !== playerId) return;
+				if (entry.targetParty && (!character?.partyId || entry.targetParty !== character.partyId)) return;
 				messages.push(entry);
 				scrollToBottom();
 			} catch {}
@@ -1083,6 +1091,14 @@
 					<div class="char-class">{character.class} L{character.level}</div>
 					<div class="char-xp">XP: {character.xp}</div>
 				</div>
+
+				<!-- Party Info -->
+				{#if character.partyId}
+					<div class="party-indicator">
+						<span class="party-icon">⚔️</span>
+						<span class="party-name">In a party</span>
+					</div>
+				{/if}
 
 				<!-- HP Bar -->
 				<div class="stat-block">
@@ -2079,6 +2095,24 @@
 	.char-xp {
 		font-size: 0.7rem;
 		color: var(--gray);
+	}
+
+	.party-indicator {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin: 0.4rem 0 0.6rem;
+		padding: 0.3rem 0.5rem;
+		background: rgba(0, 255, 65, 0.06);
+		border: 1px solid rgba(0, 255, 65, 0.15);
+		border-radius: 3px;
+		font-size: 0.7rem;
+	}
+	.party-icon { font-size: 0.85rem; }
+	.party-name {
+		color: var(--green-dim);
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
 	}
 
 	.stat-block {

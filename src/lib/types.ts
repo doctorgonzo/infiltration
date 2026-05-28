@@ -111,6 +111,7 @@ export interface Character {
 	romanceMode?: boolean;    // routed to local uncensored model
 	romanceNpc?: string;      // NPC id or name for active romance
 	romanceContext?: string;  // scene context from the Director
+	partyId?: string;         // party id if in a group
 	// ── Lifetime Stats ────────────────────────────────
 	createdAt: string;        // ISO timestamp
 	stats: CharacterStats;
@@ -214,6 +215,16 @@ export interface Quest {
 	giver: string;            // npc id
 }
 
+// ── Party ─────────────────────────────────────────────────
+export interface Party {
+	id: string;
+	name: string;
+	leaderId: string;         // character id of party leader
+	memberIds: string[];      // character ids in the party
+	pendingInvites: string[]; // character ids invited but not yet joined
+	createdAt: string;
+}
+
 // ── Game State (the whole persistent world) ────────────────
 export interface GameState {
 	worldTime: string;        // in-game time
@@ -226,6 +237,7 @@ export interface GameState {
 	enemies: Record<string, Enemy>;
 	quests: Record<string, Quest>;
 	combat: CombatState;
+	parties: Record<string, Party>;        // keyed by party id
 	globalFlags: Record<string, boolean>; // world-state flags
 	invasionLevel: number;    // 0-100, how far the invasion has progressed
 	gameLog: GameLogEntry[];  // recent events
@@ -236,6 +248,7 @@ export interface GameLogEntry {
 	type: 'narration' | 'action' | 'combat' | 'system' | 'dialogue' | 'roll';
 	actor?: string;           // who triggered this
 	targetPlayer?: string;    // if set, only this player sees the entry (private narration/rolls)
+	targetParty?: string;     // if set, all party members see the entry
 	text: string;
 	roll?: {
 		dice: string;

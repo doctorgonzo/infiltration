@@ -5,7 +5,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import type { GameState, Character, GameLogEntry, PlayerSession } from '$lib/types';
+import type { GameState, Character, GameLogEntry, PlayerSession, Party } from '$lib/types';
 import { createInitialWorld } from '$lib/server/world/madison';
 
 const STATE_PATH = join(process.cwd(), 'gamedata', 'world.json');
@@ -46,6 +46,8 @@ export function getState(): GameState {
 		try {
 			const raw = readFileSync(STATE_PATH, 'utf-8');
 			_state = JSON.parse(raw);
+			// Migration: add parties map if loading old state
+			if (!_state!.parties) _state!.parties = {};
 			console.log(`[state] Loaded world: day ${_state!.dayNumber}, ${Object.keys(_state!.players).length} characters, invasion at ${_state!.invasionLevel}%`);
 			return _state!;
 		} catch (e) {
@@ -219,4 +221,128 @@ export function advanceInvasion(amount: number): void {
 	const state = getState();
 	state.invasionLevel = Math.min(100, Math.max(0, state.invasionLevel + amount));
 	saveState();
+}
+
+// ── Party Management ──────────────────────────────────────
+
+export function createParty(leaderId: string, name: string): Party {
+	const state = getState();
+	if (!state.parties) state.parties = {};
+	const id = 'party_' + Date.now().toString(36);
+	const party: Party = {
+		id,
+		name,
+		leaderId,
+		memberIds: [leaderId],
+		pendingInvites: [],
+		createdAt: new Date().toISOString()
+	};
+	state.parties[id] = party;
+	if (state.players[leaderId]) {
+		state.players[leaderId].partyId = id;
+	}
+	saveState();
+	return party;
+}
+
+export function getParty(partyId: string): Party | undefined {
+	const state = getState();
+	if (!state.parties) return undefined;
+	return state.parties[partyId];
+}
+
+export function getPlayerParty(playerId: string): Party | undefined {
+	const character = getCharacter(playerId);
+	if (!character?.partyId) return undefined;
+	return getParty(character.partyId);
+}
+
+export function inviteToParty(partyId: string, targetId: string): boolean {
+	const state = getState();
+	const party = state.parties?.[partyId];
+	if (!party) return false;
+	if (party.memberIds.includes(targetId)) return false; // already in party
+	if (party.pendingInvites.includes(targetId)) return false; // already invited
+	party.pendingInvites.push(targetId);
+	saveState();
+	return true;
+}
+
+export function joinParty(partyId: string, characterId: string): boolean {
+	const state = getState();
+	const party = state.parties?.[partyId];
+	if (!party) return false;
+	// Remove from pending invites
+	const idx = party.pendingInvites.indexOf(characterId);
+	if (idx !== -1) party.pendingInvites.splice(idx, 1);
+	// Add to members
+	if (!party.memberIds.includes(characterId)) {
+		party.memberIds.push(characterId);
+	}
+	// Update character
+	if (state.players[characterId]) {
+		// Leave old party first
+		const oldPartyId = state.players[characterId].partyId;
+		if (oldPartyId && oldPartyId !== partyId) {
+			leaveParty(characterId);
+		}
+		state.players[characterId].partyId = partyId;
+	}
+	saveState();
+	return true;
+}
+
+export function leaveParty(characterId: string): boolean {
+	const state = getState();
+	const character = state.players[characterId];
+	if (!character?.partyId) return false;
+	const party = state.parties?.[character.partyId];
+	if (!party) {
+		character.partyId = undefined;
+		saveState();
+		return true;
+	}
+	// Remove from member list
+	party.memberIds = party.memberIds.filter(id => id !== characterId);
+	character.partyId = undefined;
+	// If leader left and members remain, promote next member
+	if (party.leaderId === characterId && party.memberIds.length > 0) {
+		party.leaderId = party.memberIds[0];
+	}
+	// If party is empty, disband it
+	if (party.memberIds.length === 0) {
+		delete state.parties[party.id];
+	}
+	saveState();
+	return true;
+}
+
+export function disbandParty(partyId: string): boolean {
+	const state = getState();
+	const party = state.parties?.[partyId];
+	if (!party) return false;
+	// Clear partyId from all members
+	for (const memberId of party.memberIds) {
+		if (state.players[memberId]) {
+			state.players[memberId].partyId = undefined;
+		}
+	}
+	delete state.parties[partyId];
+	saveState();
+	return true;
+}
+
+export function getPartyMembers(partyId: string): Character[] {
+	const state = getState();
+	const party = state.parties?.[partyId];
+	if (!party) return [];
+	return party.memberIds
+		.map(id => state.players[id])
+		.filter((p): p is Character => !!p);
+}
+
+export function findPendingInvite(characterId: string): Party | undefined {
+	const state = getState();
+	if (!state.parties) return undefined;
+	return Object.values(state.parties).find(p => p.pendingInvites.includes(characterId));
 }

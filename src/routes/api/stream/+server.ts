@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════
 
 import type { RequestHandler } from './$types';
-import { subscribe, getRecentLog } from '$lib/server/engine/state';
+import { subscribe, getRecentLog, getCharacter } from '$lib/server/engine/state';
 
 export const GET: RequestHandler = async ({ request, url }) => {
 	const encoder = new TextEncoder();
@@ -17,8 +17,18 @@ export const GET: RequestHandler = async ({ request, url }) => {
 			// Skip if this is a fresh character (no old log replay)
 			let replayCount = 0;
 			if (!skipHistory) {
+				const playerChar = playerId ? getCharacter(playerId) : undefined;
+				const playerPartyId = playerChar?.partyId;
 				const recent = getRecentLog(50)
-					.filter(entry => !entry.targetPlayer || entry.targetPlayer === playerId);
+					.filter(entry => {
+						// Public entries (no targeting) — everyone sees
+						if (!entry.targetPlayer && !entry.targetParty) return true;
+						// Targeted to this specific player
+						if (entry.targetPlayer && entry.targetPlayer === playerId) return true;
+						// Targeted to this player's party
+						if (entry.targetParty && playerPartyId && entry.targetParty === playerPartyId) return true;
+						return false;
+					});
 				replayCount = recent.length;
 				for (const entry of recent) {
 					try {
@@ -30,10 +40,19 @@ export const GET: RequestHandler = async ({ request, url }) => {
 			// Send a connected event
 			controller.enqueue(encoder.encode(`event: connected\ndata: ${JSON.stringify({ timestamp: new Date().toISOString(), count: replayCount })}\n\n`));
 
-			// Subscribe to new log entries — filter by targetPlayer
+			// Subscribe to new log entries — filter by targetPlayer and targetParty
 			const unsubscribe = subscribe((entry) => {
-				// If entry is targeted to a specific player, only send to that player
-				if (entry.targetPlayer && entry.targetPlayer !== playerId) return;
+				// Public entries — everyone sees
+				if (!entry.targetPlayer && !entry.targetParty) {
+					// fall through to send
+				}
+				// Targeted to a specific player — only that player
+				else if (entry.targetPlayer && entry.targetPlayer !== playerId) return;
+				// Targeted to a party — only party members
+				else if (entry.targetParty) {
+					const char = playerId ? getCharacter(playerId) : undefined;
+					if (!char?.partyId || char.partyId !== entry.targetParty) return;
+				}
 				try {
 					controller.enqueue(encoder.encode(`data: ${JSON.stringify(entry)}\n\n`));
 				} catch {

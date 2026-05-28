@@ -6,7 +6,7 @@
 // Tool use keeps the game honest.
 // ═══════════════════════════════════════════════════════════
 
-import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive } from './state';
+import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive, createParty, getPlayerParty, inviteToParty, joinParty, leaveParty, disbandParty, getPartyMembers, findPendingInvite, getCharacter } from './state';
 import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry } from '$lib/types';
@@ -1614,6 +1614,129 @@ export async function processAction(
 		];
 	}
 
+	// ── /party commands ──────────────────────────────
+	const partyMatch = action.trim().match(/^\/party(?:\s+(.*))?$/i);
+	if (partyMatch) {
+		const subCmd = (partyMatch[1] ?? '').trim();
+		const ts = () => new Date().toISOString();
+
+		// /party — show info
+		if (!subCmd) {
+			const party = getPlayerParty(playerId);
+			if (!party) {
+				// Check for pending invites
+				const invite = findPendingInvite(playerId);
+				if (invite) {
+					const leader = state.players[invite.leaderId];
+					return [{ timestamp: ts(), type: 'system', text: `📨 Pending invite from ${leader?.name ?? 'unknown'} to join "${invite.name}". Type /party join to accept.` }];
+				}
+				return [{ timestamp: ts(), type: 'system', text: 'You are not in a party. Type /party create <name> to start one, or wait for an invite.' }];
+			}
+			const members = getPartyMembers(party.id);
+			const memberList = members.map(m => {
+				const isLeader = m.id === party.leaderId ? ' ★' : '';
+				const isActive = isCharacterActive(m) ? '●' : '○';
+				return `  ${isActive} ${m.name} (${m.class} Lv${m.level})${isLeader}`;
+			}).join('\n');
+			const inviteList = party.pendingInvites.length > 0
+				? '\nPending invites: ' + party.pendingInvites.map(id => state.players[id]?.name ?? id).join(', ')
+				: '';
+			return [{ timestamp: ts(), type: 'system', text: `⚔️ Party: "${party.name}"\n${memberList}${inviteList}\n\n★ = leader | ● = online | ○ = offline` }];
+		}
+
+		// /party create <name>
+		if (subCmd.startsWith('create')) {
+			const name = subCmd.replace(/^create\s*/i, '').trim() || `${character.name}'s Party`;
+			if (character.partyId) {
+				return [{ timestamp: ts(), type: 'system', text: 'You are already in a party. /party leave first.' }];
+			}
+			const party = createParty(playerId, name);
+			const entry: GameLogEntry = { timestamp: ts(), type: 'system', text: `⚔️ ${character.name} formed a party: "${party.name}". Others can join with /party join after being invited.` };
+			addLogEntry(entry);
+			return [entry];
+		}
+
+		// /party invite <player name>
+		if (subCmd.startsWith('invite')) {
+			const targetName = subCmd.replace(/^invite\s*/i, '').trim();
+			if (!targetName) return [{ timestamp: ts(), type: 'system', text: 'Usage: /party invite <character name>' }];
+			const party = getPlayerParty(playerId);
+			if (!party) return [{ timestamp: ts(), type: 'system', text: 'You need to create a party first. /party create <name>' }];
+			if (party.leaderId !== playerId) return [{ timestamp: ts(), type: 'system', text: 'Only the party leader can invite others.' }];
+			// Find player by character name (case-insensitive)
+			const target = Object.values(state.players).find(p => p.name.toLowerCase() === targetName.toLowerCase() && p.alive);
+			if (!target) return [{ timestamp: ts(), type: 'system', text: `No active character named "${targetName}" found.` }];
+			if (target.id === playerId) return [{ timestamp: ts(), type: 'system', text: 'You can\'t invite yourself, chief.' }];
+			if (target.partyId === party.id) return [{ timestamp: ts(), type: 'system', text: `${target.name} is already in your party.` }];
+			const ok = inviteToParty(party.id, target.id);
+			if (!ok) return [{ timestamp: ts(), type: 'system', text: `Could not invite ${target.name}. They may already have a pending invite.` }];
+			// Notify the invited player
+			const inviteNotif: GameLogEntry = { timestamp: ts(), type: 'system', targetPlayer: target.id, text: `📨 ${character.name} invited you to join party "${party.name}". Type /party join to accept.` };
+			addLogEntry(inviteNotif);
+			return [{ timestamp: ts(), type: 'system', text: `📨 Invited ${target.name} to the party. They need to type /party join.` }];
+		}
+
+		// /party join
+		if (subCmd === 'join') {
+			const invite = findPendingInvite(playerId);
+			if (!invite) return [{ timestamp: ts(), type: 'system', text: 'No pending party invites.' }];
+			if (character.partyId) {
+				leaveParty(playerId);
+			}
+			const ok = joinParty(invite.id, playerId);
+			if (!ok) return [{ timestamp: ts(), type: 'system', text: 'Failed to join party.' }];
+			const joinEntry: GameLogEntry = { timestamp: ts(), type: 'system', targetParty: invite.id, text: `⚔️ ${character.name} joined the party!` };
+			addLogEntry(joinEntry);
+			return [joinEntry];
+		}
+
+		// /party leave
+		if (subCmd === 'leave') {
+			if (!character.partyId) return [{ timestamp: ts(), type: 'system', text: 'You are not in a party.' }];
+			const partyId = character.partyId;
+			const partyName = getPlayerParty(playerId)?.name ?? 'the party';
+			leaveParty(playerId);
+			const leaveEntry: GameLogEntry = { timestamp: ts(), type: 'system', targetParty: partyId, text: `${character.name} left ${partyName}.` };
+			addLogEntry(leaveEntry);
+			return [{ timestamp: ts(), type: 'system', text: `You left "${partyName}".` }];
+		}
+
+		// /party disband
+		if (subCmd === 'disband') {
+			const party = getPlayerParty(playerId);
+			if (!party) return [{ timestamp: ts(), type: 'system', text: 'You are not in a party.' }];
+			if (party.leaderId !== playerId) return [{ timestamp: ts(), type: 'system', text: 'Only the party leader can disband the group.' }];
+			const name = party.name;
+			const memberIds = [...party.memberIds];
+			disbandParty(party.id);
+			// Notify all former members
+			for (const memberId of memberIds) {
+				if (memberId !== playerId) {
+					addLogEntry({ timestamp: ts(), type: 'system', targetPlayer: memberId, text: `Party "${name}" has been disbanded by ${character.name}.` });
+				}
+			}
+			return [{ timestamp: ts(), type: 'system', text: `Party "${name}" disbanded.` }];
+		}
+
+		// /party kick <player name>
+		if (subCmd.startsWith('kick')) {
+			const targetName = subCmd.replace(/^kick\s*/i, '').trim();
+			if (!targetName) return [{ timestamp: ts(), type: 'system', text: 'Usage: /party kick <character name>' }];
+			const party = getPlayerParty(playerId);
+			if (!party) return [{ timestamp: ts(), type: 'system', text: 'You are not in a party.' }];
+			if (party.leaderId !== playerId) return [{ timestamp: ts(), type: 'system', text: 'Only the party leader can kick members.' }];
+			const target = Object.values(state.players).find(p => p.name.toLowerCase() === targetName.toLowerCase());
+			if (!target || target.partyId !== party.id) return [{ timestamp: ts(), type: 'system', text: `${targetName} is not in your party.` }];
+			leaveParty(target.id);
+			addLogEntry({ timestamp: ts(), type: 'system', targetPlayer: target.id, text: `You were kicked from "${party.name}" by ${character.name}.` });
+			const kickEntry: GameLogEntry = { timestamp: ts(), type: 'system', targetParty: party.id, text: `${target.name} was removed from the party.` };
+			addLogEntry(kickEntry);
+			return [kickEntry];
+		}
+
+		return [{ timestamp: ts(), type: 'system', text: 'Party commands: /party, /party create <name>, /party invite <player>, /party join, /party leave, /party disband, /party kick <player>' }];
+	}
+
 	// ── Romance mode routing ─────────────────────────
 	if (character.romanceMode && character.romanceNpc) {
 		return processRomanceAction(character, action, state);
@@ -1701,14 +1824,22 @@ export async function processAction(
 		timestamp: new Date().toISOString(),
 		type: 'action',
 		actor: character.name,
-		text: action
+		text: action,
+		// Party members see each other's actions; solo players see only their own
+		...(playerParty ? { targetParty: playerParty.id } : { targetPlayer: playerId })
 	};
 	addLogEntry(actionEntry);
 
 	// Get recent context (last 20 log entries)
-	// Filter: include public entries (no targetPlayer) + this player's private entries only
+	// Filter: public entries + this player's private entries + party entries
+	const playerParty = getPlayerParty(playerId);
 	const recentLog = state.gameLog.slice(-20)
-		.filter(e => !e.targetPlayer || e.targetPlayer === playerId)
+		.filter(e => {
+			if (!e.targetPlayer && !e.targetParty) return true;
+			if (e.targetPlayer && e.targetPlayer === playerId) return true;
+			if (e.targetParty && playerParty && e.targetParty === playerParty.id) return true;
+			return false;
+		})
 		.map(e => {
 			if (e.actor) return `[${e.type}] ${e.actor}: ${e.text}`;
 			return `[${e.type}] ${e.text}`;
@@ -1742,6 +1873,24 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 		.map(p => `${p.name} [${p.id}] (${p.class})`)
 		.join(', ');
 
+	// Party context — tell the Director about the party
+	let partyContext = '';
+	if (playerParty) {
+		const partyMembers = getPartyMembers(playerParty.id);
+		const memberLines = partyMembers.map(m => {
+			const isActor = m.id === playerId ? ' (ACTING)' : '';
+			const loc = state.locations[m.location]?.name ?? 'unknown';
+			return `  ${m.name} [${m.id}] — ${m.class} Lv${m.level}, HP ${m.hp}/${m.maxHp}, at ${loc}${isActor}`;
+		}).join('\n');
+		const sameLocation = partyMembers.filter(m => m.id !== playerId && m.location === character.location);
+		partyContext = `
+PARTY: "${playerParty.name}" (${partyMembers.length} members)
+${memberLines}
+${sameLocation.length > 0
+	? `Party members HERE with ${character.name}: ${sameLocation.map(m => m.name).join(', ')}. Address them by name in narration — they share the same experience. Write "You and ${sameLocation.map(m => m.name).join(' and ')}..." instead of just "You...".`
+	: `No other party members at ${character.name}'s location right now.`}`;
+	}
+
 	// ── Detect actions that REQUIRE skill checks ──
 	// If the player is investigating, searching, persuading, sneaking, etc.,
 	// inject a mandatory directive so the Director can't just narrate freely.
@@ -1770,7 +1919,7 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 		moneyDirective = '\n\n[SYSTEM DIRECTIVE] The player is giving, paying, or spending money. You MUST call modify_wealth with a NEGATIVE amount for the player. If the player receives change, call modify_wealth twice (negative for payment, positive for change) or call once with the net cost. Do NOT narrate money changing hands without calling modify_wealth.';
 	}
 
-	const userMessage = `${charContext}\n${locContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${character.name} says: "${action}"${skillCheckDirective}${moneyDirective}`;
+	const userMessage = `${charContext}\n${locContext}${partyContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${character.name} says: "${action}"${skillCheckDirective}${moneyDirective}`;
 
 	// Call Claude
 	const entries: GameLogEntry[] = [];
@@ -1864,11 +2013,19 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 						console.log(`[director]   🚫 SUPPRESSED (${isMeta ? 'meta' : 'enforcement'}): "${trimmed.substring(0, 100)}..."`);
 					} else {
 						console.log(`[director]   📝 NARRATION: "${trimmed.substring(0, 150)}${trimmed.length > 150 ? '...' : ''}"`);
+						// Party narration: all party members at the same location see it.
+						// Solo or no party: only the acting player sees it.
+						const partyMembersHere = playerParty
+							? getPartyMembers(playerParty.id).filter(m => m.location === character.location)
+							: [];
+						const isPartyNarration = partyMembersHere.length > 1; // >1 means at least one OTHER member here
 						const entry: GameLogEntry = {
 							timestamp: new Date().toISOString(),
 							type: 'narration',
 							text: trimmed,
-							targetPlayer: playerId
+							...(isPartyNarration
+								? { targetParty: playerParty!.id }
+								: { targetPlayer: playerId })
 						};
 						entries.push(entry);
 						addLogEntry(entry);
