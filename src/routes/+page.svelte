@@ -1257,13 +1257,7 @@
 					{/if}
 					{#if entry.type === 'roll' && entry.roll}
 						<span class="entry-roll-info">
-							🎲 [{entry.roll.dice}] {entry.roll.result}
-							{#if entry.roll.modifier !== 0}
-								{entry.roll.modifier > 0 ? '+' : ''}{entry.roll.modifier} = {entry.roll.total}
-							{/if}
-							{#if entry.roll.dc}
-								vs DC {entry.roll.dc}
-							{/if}
+							🎲 {entry.text}
 							{#if entry.roll.success !== undefined}
 								<span class:roll-success={entry.roll.success} class:roll-fail={!entry.roll.success}>
 									{entry.roll.success ? 'SUCCESS' : 'FAIL'}
