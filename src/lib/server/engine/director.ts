@@ -1820,6 +1820,9 @@ export async function processAction(
 		// Reset combat timer when not in combat
 		state.combatSecondsElapsed = 0;
 	}
+	// Fetch party info before building the action entry (needs to be available for targeting)
+	const playerParty = getPlayerParty(playerId);
+
 	const actionEntry: GameLogEntry = {
 		timestamp: new Date().toISOString(),
 		type: 'action',
@@ -1832,7 +1835,6 @@ export async function processAction(
 
 	// Get recent context (last 20 log entries)
 	// Filter: public entries + this player's private entries + party entries
-	const playerParty = getPlayerParty(playerId);
 	const recentLog = state.gameLog.slice(-20)
 		.filter(e => {
 			if (!e.targetPlayer && !e.targetParty) return true;
