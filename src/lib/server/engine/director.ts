@@ -1929,6 +1929,60 @@ Items here: ${loc.items.map(id => id).join(', ') || 'none'}` : '';
 						addLogEntry(rollEntry);
 					}
 
+					// Cross-player notification: if a tool targets a DIFFERENT player,
+					// notify them so they know something happened to their character.
+					if (!result.includes('"error"')) {
+						const targetId = toolBlock.input.target_id ?? toolBlock.input.character_id;
+						if (targetId && targetId !== playerId && state.players[targetId]) {
+							const targetChar = state.players[targetId];
+							const actorChar = state.players[playerId];
+							const actorName = actorChar?.name ?? 'Someone';
+							let notifText = '';
+
+							switch (toolBlock.name) {
+								case 'modify_hp': {
+									const parsed = JSON.parse(result);
+									const amt = parsed.newHp - parsed.oldHp;
+									notifText = amt < 0
+										? `${actorName} dealt ${Math.abs(amt)} damage to you. (${parsed.reason ?? ''}) HP: ${parsed.newHp}/${targetChar.maxHp}`
+										: `${actorName} healed you for ${amt} HP. (${parsed.reason ?? ''}) HP: ${parsed.newHp}/${targetChar.maxHp}`;
+									break;
+								}
+								case 'attack': {
+									const parsed = JSON.parse(result);
+									notifText = parsed.hit
+										? `${actorName} hit you for ${parsed.damage} damage! (${parsed.critical ? 'CRITICAL HIT' : 'Hit'})`
+										: `${actorName} swung at you and missed.`;
+									break;
+								}
+								case 'give_item': {
+									const parsed = JSON.parse(result);
+									notifText = `${actorName} gave you: ${parsed.item ?? 'an item'}`;
+									break;
+								}
+								case 'remove_item': {
+									const parsed = JSON.parse(result);
+									notifText = `${actorName} took: ${parsed.item ?? 'an item'} from you`;
+									break;
+								}
+								default: {
+									// Generic notification for any other cross-player tool
+									notifText = `${actorName} did something that affected you.`;
+								}
+							}
+
+							if (notifText) {
+								const notifEntry: GameLogEntry = {
+									timestamp: new Date().toISOString(),
+									type: 'system',
+									targetPlayer: targetId,
+									text: notifText
+								};
+								addLogEntry(notifEntry);
+							}
+						}
+					}
+
 					toolResults.push({
 						type: 'tool_result',
 						tool_use_id: toolBlock.id,
