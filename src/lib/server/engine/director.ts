@@ -1263,7 +1263,7 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 
 			// Guard: only start romance if the player explicitly made a romantic/sexual advance.
 			if (_lastPlayerAction) {
-				const romanceWords = /\b(flirt|kiss|seduc|hit on|make a move|come on to|romance|hookup|hook up|sleep with|take .* to bed|get .* alone|wink|caress|embrace|lean in|makeout|make out|intimate|attracted|sexy|cuddle|hold .* hand|ask .* out|charm)\b/i;
+				const romanceWords = /\b(flirt|kiss|seduc|hit on|make a move|come on to|romance|hookup|hook up|sleep with|take .* to bed|get .* alone|wink|caress|embrace|lean in|makeout|make out|intimate|attracted|sexy|cuddle|hold .* hand|ask .* out|charm|fuck|sex|dick|cock|hard|horny|bang|bone|smash|wanna .* something|let.?s .* this|come .* room|get .* naked|undress|strip|touch|feel .* up|grab .* ass|want you|need you|take me|take .* clothes)\b/i;
 				if (!romanceWords.test(_lastPlayerAction)) {
 					return JSON.stringify({ error: 'Player did not initiate a romantic or sexual advance. Do NOT start romance unprompted.' });
 				}
