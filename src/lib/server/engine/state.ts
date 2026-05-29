@@ -3,8 +3,8 @@
 // One world. One state. Always running.
 // ═══════════════════════════════════════════════════════════
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join, dirname } from 'path';
 import type { GameState, Character, GameLogEntry, PlayerSession, Party } from '$lib/types';
 import { createInitialWorld } from '$lib/server/world/madison';
 
@@ -73,6 +73,7 @@ export function saveState(): void {
 			if (_state!.gameLog.length > MAX_LOG_ENTRIES) {
 				_state!.gameLog = _state!.gameLog.slice(-MAX_LOG_ENTRIES);
 			}
+			mkdirSync(dirname(STATE_PATH), { recursive: true });
 			writeFileSync(STATE_PATH, JSON.stringify(_state, null, 2));
 		} catch (e) {
 			console.error('[state] Failed to save:', e);
