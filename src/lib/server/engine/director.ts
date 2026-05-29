@@ -2476,7 +2476,9 @@ ${sameLocation.length > 0
 // Local: http://localhost:11434/v1/chat/completions
 // Remote: set OLLAMA_URL env var to your tunnel URL (e.g. https://xyz.trycloudflare.com/v1/chat/completions)
 function getOllamaUrl(): string {
-	return envVar('OLLAMA_URL') || 'http://localhost:11434/v1/chat/completions';
+	// 127.0.0.1, not localhost: Node's fetch may resolve localhost to IPv6 ::1 while
+	// Ollama listens on IPv4, which surfaces as "fetch failed" (common on Windows).
+	return envVar('OLLAMA_URL') || 'http://127.0.0.1:11434/v1/chat/completions';
 }
 const ROMANCE_MODEL = 'leeplenty/lumimaid-v0.2:8b';
 

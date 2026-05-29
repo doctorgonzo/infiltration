@@ -114,7 +114,7 @@ Info "Writing .env (local Director mode)"
 @"
 DIRECTOR_BACKEND=local
 LOCAL_DIRECTOR_MODEL=$DirectorModel
-OLLAMA_URL=http://localhost:11434/v1/chat/completions
+OLLAMA_URL=http://127.0.0.1:11434/v1/chat/completions
 "@ | Set-Content -Path (Join-Path $TargetDir '.env') -Encoding ascii
 Ok ".env written."
 
