@@ -13,6 +13,11 @@ export const GET: RequestHandler = async ({ request, url }) => {
 
 	const stream = new ReadableStream({
 		start(controller) {
+			// Defeat proxy/CDN buffering (e.g. Cloudflare tunnels): a >2KB comment
+			// padding forces the edge to flush the response head immediately so SSE
+			// starts streaming instead of being held until the stream closes.
+			controller.enqueue(encoder.encode(`:${' '.repeat(2048)}\n\n`));
+
 			// Send recent log entries so new connections see context
 			// Skip if this is a fresh character (no old log replay)
 			let replayCount = 0;
@@ -83,7 +88,8 @@ export const GET: RequestHandler = async ({ request, url }) => {
 	return new Response(stream, {
 		headers: {
 			'Content-Type': 'text/event-stream',
-			'Cache-Control': 'no-cache',
+			// no-transform stops Cloudflare/CDNs from compressing (and thus buffering) the stream.
+			'Cache-Control': 'no-cache, no-transform',
 			'Connection': 'keep-alive',
 			'X-Accel-Buffering': 'no' // nginx compat
 		}
