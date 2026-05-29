@@ -14,36 +14,41 @@ import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-// SvelteKit's $env/dynamic/private sometimes fails to load .env vars after HMR.
-// Fallback: read .env directly from disk.
-let _cachedKey: string | null = null;
-function getApiKey(): string {
-	if (_cachedKey) return _cachedKey;
-	const key = env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || '';
-	if (key) { _cachedKey = key; return key; }
+// SvelteKit's $env/dynamic/private only loads .env in `vite dev`; the adapter-node
+// production build (`npm run start`) does NOT, and HMR can drop vars too. So every
+// env lookup falls back to parsing .env off disk directly (parsed once, cached).
+let _dotenvCache: Record<string, string> | null = null;
+function readDotenv(): Record<string, string> {
+	if (_dotenvCache) return _dotenvCache;
+	const out: Record<string, string> = {};
 	try {
-		const envFile = readFileSync(join(process.cwd(), '.env'), 'utf8');
-		const match = envFile.match(/ANTHROPIC_API_KEY=(.+)/);
-		if (match) {
-			const key2 = match[1].trim();
-			_cachedKey = key2;
-			console.log('[director] Loaded API key from .env file directly');
-			return key2;
+		const file = readFileSync(join(process.cwd(), '.env'), 'utf8');
+		for (const line of file.split('\n')) {
+			const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+			if (m) out[m[1]] = m[2].trim();
 		}
 	} catch {}
-	console.error('[director] NO API KEY FOUND anywhere');
-	return '';
+	_dotenvCache = out;
+	return out;
+}
+function envVar(name: string): string {
+	return (env as any)[name] || process.env[name] || readDotenv()[name] || '';
+}
+
+function getApiKey(): string {
+	const key = envVar('ANTHROPIC_API_KEY');
+	if (!key) console.error('[director] NO API KEY FOUND anywhere');
+	return key;
 }
 
 // ── Director backend selection ─────────────────────────────
 // 'cloud' = Anthropic Messages API (Sonnet/Haiku).
 // 'local' = Ollama OpenAI-compatible endpoint (e.g. Qwen-32B) via getOllamaUrl().
 function getDirectorBackend(): 'cloud' | 'local' {
-	const v = (env.DIRECTOR_BACKEND || process.env.DIRECTOR_BACKEND || 'cloud').toLowerCase();
-	return v === 'local' ? 'local' : 'cloud';
+	return (envVar('DIRECTOR_BACKEND') || 'cloud').toLowerCase() === 'local' ? 'local' : 'cloud';
 }
 function getLocalDirectorModel(): string {
-	return env.LOCAL_DIRECTOR_MODEL || process.env.LOCAL_DIRECTOR_MODEL || 'qwen2.5:32b-instruct';
+	return envVar('LOCAL_DIRECTOR_MODEL') || 'qwen2.5:32b-instruct';
 }
 
 // Anthropic-shaped request the loop builds; both backends consume it and return
@@ -2471,7 +2476,7 @@ ${sameLocation.length > 0
 // Local: http://localhost:11434/v1/chat/completions
 // Remote: set OLLAMA_URL env var to your tunnel URL (e.g. https://xyz.trycloudflare.com/v1/chat/completions)
 function getOllamaUrl(): string {
-	return env.OLLAMA_URL || process.env.OLLAMA_URL || 'http://localhost:11434/v1/chat/completions';
+	return envVar('OLLAMA_URL') || 'http://localhost:11434/v1/chat/completions';
 }
 const ROMANCE_MODEL = 'leeplenty/lumimaid-v0.2:8b';
 
