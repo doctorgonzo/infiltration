@@ -35,6 +35,155 @@ function getApiKey(): string {
 	return '';
 }
 
+// ── Director backend selection ─────────────────────────────
+// 'cloud' = Anthropic Messages API (Sonnet/Haiku).
+// 'local' = Ollama OpenAI-compatible endpoint (e.g. Qwen-32B) via getOllamaUrl().
+function getDirectorBackend(): 'cloud' | 'local' {
+	const v = (env.DIRECTOR_BACKEND || process.env.DIRECTOR_BACKEND || 'cloud').toLowerCase();
+	return v === 'local' ? 'local' : 'cloud';
+}
+function getLocalDirectorModel(): string {
+	return env.LOCAL_DIRECTOR_MODEL || process.env.LOCAL_DIRECTOR_MODEL || 'qwen2.5:32b-instruct';
+}
+
+// Anthropic-shaped request the loop builds; both backends consume it and return
+// Anthropic-shaped content blocks so the tool loop never has to care which is live.
+type DirectorRequest = {
+	system: Array<{ type: string; text: string; cache_control?: unknown }>;
+	messages: any[];
+	tools: any[];
+	enforcementMode: boolean;
+};
+type NormalizedResponse = { content: any[]; stop_reason: string; usage?: any };
+
+async function callDirectorLLM(req: DirectorRequest): Promise<NormalizedResponse> {
+	return getDirectorBackend() === 'local' ? callLocalDirector(req) : callCloudDirector(req);
+}
+
+async function callCloudDirector(req: DirectorRequest): Promise<NormalizedResponse> {
+	const { system, messages, tools, enforcementMode } = req;
+	const response = await fetch('https://api.anthropic.com/v1/messages', {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'x-api-key': getApiKey(),
+			'anthropic-version': '2023-06-01',
+			'anthropic-beta': 'prompt-caching-2024-07-31'
+		},
+		body: JSON.stringify({
+			// Sonnet for primary narration + tool decisions, Haiku for enforcement rounds.
+			model: enforcementMode ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
+			max_tokens: 1024,
+			temperature: 0.8,
+			system,
+			messages,
+			tools,
+			...(enforcementMode ? { tool_choice: { type: 'any' as const } } : {})
+		})
+	});
+	if (!response.ok) {
+		throw new Error(`API ${response.status}: ${(await response.text()).substring(0, 200)}`);
+	}
+	return await response.json();
+}
+
+// Translate the Anthropic-shaped request to OpenAI chat-completions, call Ollama,
+// and translate the reply back to Anthropic content blocks. cache_control is dropped
+// (no-op here); the system array is flattened to one string; tool_use/tool_result
+// blocks become tool_calls / role:"tool" messages.
+async function callLocalDirector(req: DirectorRequest): Promise<NormalizedResponse> {
+	const { system, messages, tools, enforcementMode } = req;
+
+	const systemText = system.map((b) => b.text).join('\n\n');
+	const oaiMessages: any[] = [{ role: 'system', content: systemText }];
+
+	for (const m of messages) {
+		if (typeof m.content === 'string') {
+			oaiMessages.push({ role: m.role, content: m.content });
+			continue;
+		}
+		const blocks = Array.isArray(m.content) ? m.content : [];
+		if (m.role === 'assistant') {
+			const text = blocks.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
+			const toolUses = blocks.filter((b: any) => b.type === 'tool_use');
+			const msg: any = { role: 'assistant', content: text };
+			if (toolUses.length) {
+				msg.tool_calls = toolUses.map((b: any) => ({
+					id: b.id,
+					type: 'function',
+					function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) }
+				}));
+			}
+			oaiMessages.push(msg);
+		} else {
+			const toolResults = blocks.filter((b: any) => b.type === 'tool_result');
+			if (toolResults.length) {
+				for (const tr of toolResults) {
+					oaiMessages.push({
+						role: 'tool',
+						tool_call_id: tr.tool_use_id,
+						content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content)
+					});
+				}
+			} else {
+				const text = blocks.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
+				oaiMessages.push({ role: 'user', content: text });
+			}
+		}
+	}
+
+	const oaiTools = tools.map((t: any) => ({
+		type: 'function',
+		function: { name: t.name, description: t.description, parameters: t.input_schema }
+	}));
+
+	const response = await fetch(getOllamaUrl(), {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			model: getLocalDirectorModel(),
+			max_tokens: 1024,
+			temperature: 0.8,
+			messages: oaiMessages,
+			tools: oaiTools,
+			...(enforcementMode ? { tool_choice: 'required' } : {})
+		})
+	});
+	if (!response.ok) {
+		throw new Error(`Local model ${response.status}: ${(await response.text()).substring(0, 200)}`);
+	}
+
+	const data = await response.json();
+	const msg = data.choices?.[0]?.message ?? {};
+	const finish = data.choices?.[0]?.finish_reason;
+
+	const content: any[] = [];
+	if (msg.content && msg.content.trim()) content.push({ type: 'text', text: msg.content });
+	if (Array.isArray(msg.tool_calls)) {
+		for (const tc of msg.tool_calls) {
+			let input: any = {};
+			try { input = JSON.parse(tc.function?.arguments || '{}'); } catch { input = {}; }
+			content.push({
+				type: 'tool_use',
+				id: tc.id || `call_${Math.random().toString(36).slice(2)}`,
+				name: tc.function?.name,
+				input
+			});
+		}
+	}
+
+	const stop_reason =
+		Array.isArray(msg.tool_calls) && msg.tool_calls.length ? 'tool_use'
+		: finish === 'length' ? 'max_tokens'
+		: 'end_turn';
+
+	const usage = data.usage
+		? { input_tokens: data.usage.prompt_tokens ?? 0, output_tokens: data.usage.completion_tokens ?? 0 }
+		: undefined;
+
+	return { content, stop_reason, usage };
+}
+
 // ── Tool Definitions for Claude ────────────────────────────
 
 // ── Infiltrator Progression Gate ──────────────────────────
@@ -1781,8 +1930,15 @@ export async function processAction(
 	// Auto-start: if the action is explicitly sexual and romance mode isn't active,
 	// try to auto-route to the romance engine instead of letting Claude refuse.
 	if (!character.romanceMode) {
+		// Strip idiomatic/exclamatory "fuck" so "fuck it", "what the fuck", etc.
+		// don't false-trigger romance. Genuine advances ("fuck her") survive
+		// because a bare "fuck" with no idiom prefix/suffix is left intact.
+		const deIdiomized = action.replace(
+			/\b(?:(?:what\s+the|the|holy|oh+|ah+|aw+)\s+fuck|fuck(?:\s+(?:it|off|you|this|that|all|sake)|'?s\s+sake))\b/gi,
+			' '
+		);
 		const explicitPattern = /\b(fuck|sex|dick|cock|hard|horny|bang|bone|smash|suck|blowjob|pussy|ass|tits|breast|nipple|naked|undress|strip|penetrat|thrust|moan|orgasm|cum|wanna .* something|get .* naked|take .* clothes|bend .* over|spread|lick|eat .* out|finger|jerk|stroke|grope|fondle|mount|ride|straddle|insert|pencil .* butt|69|doggystyle|missionary|anal|oral)\b/i;
-		if (explicitPattern.test(action)) {
+		if (explicitPattern.test(deIdiomized)) {
 			// Find an NPC at this location to be the romance target
 			const loc = state.locations[character.location];
 			const nearbyNpcId = loc?.npcs?.find(id => state.npcs[id]?.alive);
@@ -2049,27 +2205,18 @@ ${sameLocation.length > 0
 			// round so a mid-action start_combat pulls the rules in for the next round.
 			const includeCombatRules = combatRulesNeeded(state, character.location, action);
 
-			const response = await fetch('https://api.anthropic.com/v1/messages', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'x-api-key': getApiKey(),
-					'anthropic-version': '2023-06-01',
-					'anthropic-beta': 'prompt-caching-2024-07-31'
-				},
-				body: JSON.stringify({
-					// Sonnet for primary narration + tool decisions, Haiku for enforcement correction rounds
-					model: enforcementMode ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
-					max_tokens: 1024,
-					temperature: 0.8,
-					// System prompt split for caching. Render order: tools → system → messages.
-					// 1h-TTL breakpoints (must precede any 5m breakpoint per API ordering rule):
-					//   STATIC_RULES — identical every request; warm for the whole session.
-					//   slowState    — locations/quests/NPCs; hits across back-to-back actions
-					//                  at the same spot, re-caches only when the world shifts.
-					// fastState (time/HP/combat/flags) changes every turn, so it stays uncached.
-					// COMBAT_RULES, when present, is appended last (after the cached prefix) so
-					// toggling it never invalidates the 1h cache above it.
+			// System prompt split for caching (cloud only; the local backend flattens it).
+			// Render order: tools → system → messages.
+			// 1h-TTL breakpoints (must precede any 5m breakpoint per API ordering rule):
+			//   STATIC_RULES — identical every request; warm for the whole session.
+			//   slowState    — locations/quests/NPCs; hits across back-to-back actions
+			//                  at the same spot, re-caches only when the world shifts.
+			// fastState (time/HP/combat/flags) changes every turn, so it stays uncached.
+			// COMBAT_RULES, when present, is appended last (after the cached prefix) so
+			// toggling it never invalidates the 1h cache above it.
+			let data: NormalizedResponse;
+			try {
+				data = await callDirectorLLM({
 					system: [
 						{ type: 'text', text: STATIC_RULES, cache_control: { type: 'ephemeral', ttl: '1h' } },
 						{ type: 'text', text: dynamicSlow, cache_control: { type: 'ephemeral', ttl: '1h' } },
@@ -2078,25 +2225,21 @@ ${sameLocation.length > 0
 					],
 					messages,
 					tools: toolsWithCache,
-					...(enforcementMode ? { tool_choice: { type: 'any' as const } } : {})
-				})
-			});
-
-			if (!response.ok) {
-				const err = await response.text();
-				console.error(`[director] Claude error (${response.status}):`, err);
+					enforcementMode
+				});
+			} catch (e: any) {
+				console.error('[director] LLM error:', e?.message ?? e);
 				entries.push({
 					timestamp: new Date().toISOString(),
 					type: 'system',
-					text: `The Director pauses. (API ${response.status}: ${err.substring(0, 200)})`
+					text: `The Director pauses. (${e?.message ?? 'LLM unavailable'})`
 				});
 				break;
 			}
 
-			const data = await response.json();
 			const assistantContent = data.content ?? [];
 
-			console.log(`[director] Round ${roundNumber} | model: ${enforcementMode ? 'haiku' : 'sonnet'} | stop_reason: ${data.stop_reason} | blocks: ${assistantContent.length}`);
+			console.log(`[director] Round ${roundNumber} | backend: ${getDirectorBackend()} | stop_reason: ${data.stop_reason} | blocks: ${assistantContent.length}`);
 			if (data.usage) {
 				const cacheRead = data.usage.cache_read_input_tokens ?? 0;
 				const cacheCreate = data.usage.cache_creation_input_tokens ?? 0;
