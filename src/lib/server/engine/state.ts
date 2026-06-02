@@ -156,6 +156,32 @@ export function updateCharacter(id: string, updates: Partial<Character>): void {
 	}
 }
 
+export function deleteCharacter(id: string): Character | undefined {
+	const state = getState();
+	const character = state.players[id];
+	if (!character) return undefined;
+
+	if (state.parties) {
+		for (const [partyId, party] of Object.entries(state.parties)) {
+			party.pendingInvites = party.pendingInvites.filter(memberId => memberId !== id);
+			if (party.memberIds.includes(id)) {
+				party.memberIds = party.memberIds.filter(memberId => memberId !== id);
+				if (party.leaderId === id && party.memberIds.length > 0) {
+					party.leaderId = party.memberIds[0];
+				}
+			}
+			if (party.memberIds.length === 0) {
+				delete state.parties[partyId];
+			}
+		}
+	}
+
+	delete state.players[id];
+	_sessions.delete(id);
+	saveState();
+	return character;
+}
+
 /**
  * Mark a character as active (touch their lastActive timestamp)
  */

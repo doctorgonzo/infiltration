@@ -24,6 +24,8 @@
 		xp: number; wealth: number;
 	}>>([]);
 	let isLoadingCharacters = $state(false);
+	let deletingCharacterId = $state<string | null>(null);
+	let deleteCharacterError = $state('');
 
 	// ── Character Creation ─────────────────────────────────
 	let characterName = $state('');
@@ -282,6 +284,43 @@
 
 	// ── Actions ────────────────────────────────────────────
 
+	function logEntryKey(entry: GameLogEntry): string {
+		return [
+			entry.timestamp,
+			entry.type,
+			entry.actor ?? '',
+			entry.text
+		].join('|');
+	}
+
+	function resetMessages() {
+		messages = [];
+	}
+
+	function appendEntries(entries: unknown) {
+		if (!Array.isArray(entries)) return;
+
+		const seen = new Set(messages.map(logEntryKey));
+		const nextEntries = entries.filter((entry): entry is GameLogEntry => {
+			if (!entry || typeof entry !== 'object') return false;
+			const candidate = entry as GameLogEntry;
+			if (!candidate.timestamp || !candidate.type || !candidate.text) return false;
+			const key = logEntryKey(candidate);
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		});
+
+		if (nextEntries.length > 0) {
+			messages = [...messages, ...nextEntries];
+			scrollToBottom();
+		}
+	}
+
+	function appendEntry(entry: GameLogEntry) {
+		appendEntries([entry]);
+	}
+
 	async function enterName() {
 		if (!playerName.trim()) return;
 		localStorage.setItem('infiltration_playerName', playerName.trim());
@@ -290,6 +329,7 @@
 
 	async function loadCharacters() {
 		isLoadingCharacters = true;
+		deleteCharacterError = '';
 		try {
 			const res = await fetch(`/api/characters?playerName=${encodeURIComponent(playerName.trim())}`);
 			const data = await res.json();
@@ -300,6 +340,42 @@
 			phase = 'select';
 		} finally {
 			isLoadingCharacters = false;
+		}
+	}
+
+	async function requestDeleteCharacter(charId: string, charName: string) {
+		if (deletingCharacterId) return;
+		if (!confirm(`Delete ${charName} permanently? This cannot be undone.`)) return;
+
+		deletingCharacterId = charId;
+		deleteCharacterError = '';
+		try {
+			const res = await fetch('/api/characters', {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					playerName: playerName.trim(),
+					characterId: charId
+				})
+			});
+			const data = await res.json();
+
+			if (!res.ok) {
+				deleteCharacterError = data.error || 'Could not delete that character.';
+				return;
+			}
+
+			existingCharacters = existingCharacters.filter(char => char.id !== charId);
+			if (playerId === charId) {
+				localStorage.removeItem('infiltration_playerId');
+				playerId = null;
+				character = null;
+				resetMessages();
+			}
+		} catch {
+			deleteCharacterError = 'Connection failed. Try again.';
+		} finally {
+			deletingCharacterId = null;
 		}
 	}
 
@@ -315,7 +391,7 @@
 					character = data.character;
 					if (data.worldTime) worldTime = data.worldTime;
 					if (data.dayNumber != null) dayNumber = data.dayNumber;
-					messages = [];
+					resetMessages();
 					phase = 'play';
 					connectStream();
 				}
@@ -407,7 +483,7 @@
 			localStorage.setItem('infiltration_playerId', data.playerId);
 			localStorage.setItem('infiltration_playerName', playerName.trim());
 
-			messages = [];
+			resetMessages();
 			phase = 'play';
 			connectStream(true);
 
@@ -418,7 +494,10 @@
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
 						body: JSON.stringify({ playerId, action: '/look' })
-					}).catch(() => {});
+					})
+						.then((res) => res.json())
+						.then((data) => appendEntries(data.entries))
+						.catch(() => {});
 				}
 			}, 500);
 		} catch (e) {
@@ -442,9 +521,11 @@
 				body: JSON.stringify({ playerId, action })
 			});
 
+			const data = await res.json();
+			appendEntries(data.entries);
+
 			if (!res.ok) {
-				const data = await res.json();
-				messages.push({
+				appendEntry({
 					timestamp: new Date().toISOString(),
 					type: 'system',
 					text: data.error || 'Action failed.'
@@ -452,7 +533,7 @@
 			}
 			await refreshState();
 		} catch (e) {
-			messages.push({
+			appendEntry({
 				timestamp: new Date().toISOString(),
 				type: 'system',
 				text: 'Connection lost. Try again.'
@@ -477,8 +558,7 @@
 				// Client-side safety filter: skip entries not meant for this player
 				if (entry.targetPlayer && entry.targetPlayer !== playerId) return;
 				if (entry.targetParty && (!character?.partyId || entry.targetParty !== character.partyId)) return;
-				messages.push(entry);
-				scrollToBottom();
+				appendEntry(entry);
 			} catch {}
 		};
 
@@ -501,7 +581,7 @@
 		localStorage.removeItem('infiltration_playerId');
 		playerId = null;
 		character = null;
-		messages = [];
+		resetMessages();
 		// Keep playerName — go back to character select, not name entry
 		loadCharacters();
 	}
@@ -520,7 +600,7 @@
 		localStorage.removeItem('infiltration_playerName');
 		playerId = null;
 		character = null;
-		messages = [];
+		resetMessages();
 		playerName = '';
 		existingCharacters = [];
 		phase = 'name';
@@ -637,7 +717,7 @@
 						character = data.character;
 						if (data.worldTime) worldTime = data.worldTime;
 						if (data.dayNumber != null) dayNumber = data.dayNumber;
-						messages = [];
+						resetMessages();
 						phase = 'play';
 						connectStream();
 					} else {
@@ -744,31 +824,46 @@
 					<label>YOUR CHARACTERS</label>
 					<div class="char-select-list">
 						{#each existingCharacters as char}
-							<button
-								class="char-select-card"
-								class:dead={!char.alive}
-								onclick={() => char.alive && selectCharacter(char.id)}
-								disabled={!char.alive}
-							>
-								<div class="char-select-top">
-									<span class="char-select-name">{char.name}</span>
-									<span class="char-select-class">{char.class} L{char.level}</span>
-								</div>
-								<div class="char-select-bottom">
-									<span class="char-select-hp" class:hp-low={char.hp / char.maxHp < 0.3}>
-										HP {char.hp}/{char.maxHp}
-									</span>
-									<span class="char-select-loc">{char.location}</span>
-									{#if !char.alive}
-										<span class="char-select-dead">DEAD</span>
-									{/if}
-								</div>
-							</button>
+							<div class="char-select-row">
+								<button
+									class="char-select-card"
+									class:dead={!char.alive}
+									onclick={() => char.alive && selectCharacter(char.id)}
+									disabled={!char.alive || deletingCharacterId === char.id}
+								>
+									<div class="char-select-top">
+										<span class="char-select-name">{char.name}</span>
+										<span class="char-select-class">{char.class} L{char.level}</span>
+									</div>
+									<div class="char-select-bottom">
+										<span class="char-select-hp" class:hp-low={char.hp / char.maxHp < 0.3}>
+											HP {char.hp}/{char.maxHp}
+										</span>
+										<span class="char-select-loc">{char.location}</span>
+										{#if !char.alive}
+											<span class="char-select-dead">DEAD</span>
+										{/if}
+									</div>
+								</button>
+								<button
+									class="char-delete-button"
+									onclick={() => requestDeleteCharacter(char.id, char.name)}
+									disabled={deletingCharacterId !== null}
+									title={`Delete ${char.name}`}
+									aria-label={`Delete ${char.name}`}
+								>
+									{deletingCharacterId === char.id ? '...' : 'DELETE'}
+								</button>
+							</div>
 						{/each}
 					</div>
 				</div>
 			{:else}
 				<p class="no-chars">No characters yet. Time to make one.</p>
+			{/if}
+
+			{#if deleteCharacterError}
+				<div class="error-msg">{deleteCharacterError}</div>
 			{/if}
 
 			<button class="join-button" onclick={goToCreate}>
@@ -1890,6 +1985,13 @@
 		gap: 0.5rem;
 	}
 
+	.char-select-row {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 5.5rem;
+		gap: 0.5rem;
+		align-items: stretch;
+	}
+
 	.char-select-card {
 		width: 100%;
 		padding: 0.75rem 1rem;
@@ -1912,6 +2014,30 @@
 	.char-select-card.dead {
 		opacity: 0.4;
 		cursor: not-allowed;
+	}
+
+	.char-delete-button {
+		width: 5.5rem;
+		background: transparent;
+		border: 1px solid var(--red);
+		border-radius: 3px;
+		color: var(--red);
+		cursor: pointer;
+		font-family: var(--font-mono);
+		font-size: 0.65rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		transition: all 0.2s;
+	}
+
+	.char-delete-button:hover:not(:disabled) {
+		background: rgba(255, 0, 64, 0.1);
+		box-shadow: 0 0 10px rgba(255, 0, 64, 0.25);
+	}
+
+	.char-delete-button:disabled {
+		cursor: not-allowed;
+		opacity: 0.45;
 	}
 
 	.char-select-top {
@@ -2621,6 +2747,24 @@
 
 		.stats-roll-grid {
 			grid-template-columns: repeat(2, 1fr);
+		}
+
+		.char-select-row {
+			grid-template-columns: 1fr;
+		}
+
+		.char-delete-button {
+			width: 100%;
+			min-height: 2.25rem;
+		}
+
+		.char-select-top {
+			gap: 0.75rem;
+		}
+
+		.char-select-bottom {
+			flex-wrap: wrap;
+			gap: 0.5rem 0.75rem;
 		}
 
 		.sidebar {
