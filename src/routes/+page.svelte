@@ -199,6 +199,7 @@
 		{ command: '/inventory', label: 'Inventory', description: 'Check your inventory', category: 'info' },
 		{ command: '/stats', label: 'Stats', description: 'View character sheet', category: 'info' },
 		{ command: '/admin', label: 'Admin', description: 'Toggle god mode (1000 HP, always nat 20)', category: 'info' },
+		{ command: '/start', label: 'Start Scene', description: 'Enter romance mode', category: 'info' },
 		{ command: '/end', label: 'End Scene', description: 'Exit romance mode', category: 'info' },
 		{ command: '/party', label: 'Party', description: 'Show party info', category: 'info' },
 		{ command: '/party create', label: 'Create Party', description: 'Form a new party', category: 'info' },

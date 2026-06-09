@@ -9,7 +9,7 @@
 import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive, createParty, getPlayerParty, inviteToParty, joinParty, leaveParty, disbandParty, getPartyMembers, findPendingInvite, getCharacter } from './state';
 import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES } from '$lib/server/world/madison';
-import type { GameLogEntry, Character, GameState, EncounterEntry } from '$lib/types';
+import type { GameLogEntry, Character, GameState, EncounterEntry, NPC } from '$lib/types';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -1427,13 +1427,7 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 
 			// Pre-check: can we actually reach the romance model?
 			// Don't trap the player in romance mode if Ollama is unreachable.
-			try {
-				const probe = await fetch(getOllamaUrl().replace('/v1/chat/completions', '/v1/models'), {
-					method: 'GET',
-					signal: AbortSignal.timeout(3000)
-				});
-				if (!probe.ok) throw new Error('probe failed');
-			} catch {
+			if (!(await isOllamaReachable())) {
 				return JSON.stringify({ error: `Romance engine offline — narrate the flirtation yourself but do NOT enter romance mode. ${displayName} is interested but the moment doesn't fully land right now.` });
 			}
 
@@ -1666,6 +1660,37 @@ function combatRulesNeeded(state: GameState, locationId: string | undefined, act
 	return false;
 }
 
+function normalizeRomanceTarget(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/[_-]+/g, ' ')
+		.replace(/[^a-z0-9\s]/g, '')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function getNearbyRomanceTargets(state: GameState, character: Character): NPC[] {
+	const loc = state.locations[character.location];
+	return (loc?.npcs ?? [])
+		.map(id => state.npcs[id])
+		.filter((npc): npc is NPC => Boolean(npc?.alive));
+}
+
+function matchNearbyRomanceTarget(targets: NPC[], query: string): NPC | undefined {
+	const normalizedQuery = normalizeRomanceTarget(query);
+	return targets.find(npc =>
+		normalizeRomanceTarget(npc.id) === normalizedQuery ||
+		normalizeRomanceTarget(npc.name) === normalizedQuery
+	) ?? targets.find(npc =>
+		normalizeRomanceTarget(npc.id).includes(normalizedQuery) ||
+		normalizeRomanceTarget(npc.name).includes(normalizedQuery)
+	);
+}
+
+function formatRomanceTargets(targets: NPC[]): string {
+	return targets.map(npc => npc.name).join(', ');
+}
+
 // ── Dynamic State (NOT in STATIC_RULES — changes between requests) ──────
 // Split into two segments so the prompt cache can do more work:
 //   slow — locations/quests/NPCs/infiltrator status. Stable while the player
@@ -1717,6 +1742,7 @@ export async function processAction(
 	if (!character) {
 		return [{ timestamp: new Date().toISOString(), type: 'system', text: 'You need to create a character first.' }];
 	}
+	const trimmedAction = action.trim();
 
 	// ── Inebriation decay — sober up over real time ──
 	if (character.inebriation > 0 && character.lastActive) {
@@ -1761,6 +1787,77 @@ export async function processAction(
 				text: '⚡ God mode ON. HP set to 1000. All rolls are nat 20. Type /admin again to disable.'
 			}];
 		}
+	}
+
+	// ── /start — enter romance mode explicitly ───────
+	const startMatch = trimmedAction.match(/^\/start(?:\s+(.+))?$/i);
+	if (startMatch) {
+		if (character.romanceMode) {
+			const npcName = character.romanceNpc ?? 'your companion';
+			return [{
+				timestamp: new Date().toISOString(),
+				type: 'system',
+				text: `Romance mode is already active with ${npcName}. Type /end to return to the main Director.`
+			}];
+		}
+
+		const nearbyTargets = getNearbyRomanceTargets(state, character);
+		const requestedTarget = (startMatch[1] ?? '').trim();
+		let target: NPC | undefined;
+
+		if (requestedTarget) {
+			target = matchNearbyRomanceTarget(nearbyTargets, requestedTarget);
+			if (!target) {
+				const nearbyList = nearbyTargets.length > 0
+					? ` Nearby: ${formatRomanceTargets(nearbyTargets)}.`
+					: '';
+				return [{
+					timestamp: new Date().toISOString(),
+					type: 'system',
+					text: `No nearby NPC matched "${requestedTarget}".${nearbyList}`
+				}];
+			}
+		} else if (nearbyTargets.length === 1) {
+			target = nearbyTargets[0];
+		} else if (nearbyTargets.length > 1) {
+			return [{
+				timestamp: new Date().toISOString(),
+				type: 'system',
+				text: `Who should the scene start with? Try /start <name>. Nearby: ${formatRomanceTargets(nearbyTargets)}.`
+			}];
+		} else {
+			return [{
+				timestamp: new Date().toISOString(),
+				type: 'system',
+				text: 'There is no one nearby to start a private scene with.'
+			}];
+		}
+
+		if (!(await isOllamaReachable())) {
+			return [{
+				timestamp: new Date().toISOString(),
+				type: 'system',
+				text: 'Romance engine offline. Start Ollama or set OLLAMA_URL, then try /start again.'
+			}];
+		}
+
+		character.romanceMode = true;
+		character.romanceNpc = target.name;
+		character.romanceContext = `${target.name} — ${target.description}`;
+		if (character.stats) character.stats.romances++;
+		saveState();
+		addLogEntry({
+			timestamp: new Date().toISOString(),
+			type: 'system',
+			targetPlayer: '__director__',
+			text: `[ROMANCE STARTED] ${character.name} and ${target.name}`
+		});
+
+		return [{
+			timestamp: new Date().toISOString(),
+			type: 'system',
+			text: `Romance mode started with ${target.name}. Type /end to return to the main Director.`
+		}];
 	}
 
 	// ── /end — exit romance mode ─────────────────────
@@ -1951,13 +2048,7 @@ export async function processAction(
 
 			if (nearbyNpc) {
 				// Probe Ollama — only auto-start if the romance engine is reachable
-				let ollamaUp = false;
-				try {
-					const probe = await fetch(getOllamaUrl().replace('/v1/chat/completions', '/v1/models'), {
-						method: 'GET', signal: AbortSignal.timeout(3000)
-					});
-					ollamaUp = probe.ok;
-				} catch {}
+				const ollamaUp = await isOllamaReachable();
 
 				if (ollamaUp) {
 					character.romanceMode = true;
@@ -1979,7 +2070,21 @@ export async function processAction(
 	}
 
 	if (character.romanceMode && character.romanceNpc) {
-		return processRomanceAction(character, action, state);
+		if (!(await isOllamaReachable(1500))) {
+			const npcName = character.romanceNpc;
+			character.romanceMode = false;
+			delete character.romanceNpc;
+			delete character.romanceContext;
+			saveState();
+			addLogEntry({
+				timestamp: new Date().toISOString(),
+				type: 'system',
+				targetPlayer: playerId,
+				text: `The private scene with ${npcName} fades; the live Director takes over again.`
+			});
+		} else {
+			return processRomanceAction(character, action, state);
+		}
 	}
 
 	// Log the player's action
@@ -2480,6 +2585,19 @@ function getOllamaUrl(): string {
 	// Ollama listens on IPv4, which surfaces as "fetch failed" (common on Windows).
 	return envVar('OLLAMA_URL') || 'http://127.0.0.1:11434/v1/chat/completions';
 }
+
+async function isOllamaReachable(timeoutMs = 3000): Promise<boolean> {
+	try {
+		const probe = await fetch(getOllamaUrl().replace('/v1/chat/completions', '/v1/models'), {
+			method: 'GET',
+			signal: AbortSignal.timeout(timeoutMs)
+		});
+		return probe.ok;
+	} catch {
+		return false;
+	}
+}
+
 const ROMANCE_MODEL = 'leeplenty/lumimaid-v0.2:8b';
 
 async function processRomanceAction(
@@ -2613,11 +2731,13 @@ async function processRomanceAction(
 
 		if (!response.ok) {
 			console.error('[romance] Local model error:', await response.text());
-			return [{
+			const entry: GameLogEntry = {
 				timestamp: new Date().toISOString(),
 				type: 'narration',
 				text: npcName + ' smiles but the moment feels uncertain. (Local model unavailable — is Ollama running?)'
-			}];
+			};
+			addLogEntry(entry);
+			return [entry];
 		}
 
 		const data = await response.json();
@@ -2632,10 +2752,12 @@ async function processRomanceAction(
 		return [entry];
 	} catch (error) {
 		console.error('[romance] Error:', error);
-		return [{
+		const entry: GameLogEntry = {
 			timestamp: new Date().toISOString(),
 			type: 'narration',
 			text: npcName + ' pauses, distracted. (Connection to local model failed.)'
-		}];
+		};
+		addLogEntry(entry);
+		return [entry];
 	}
 }
