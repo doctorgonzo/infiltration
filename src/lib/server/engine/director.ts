@@ -42,13 +42,20 @@ function getApiKey(): string {
 }
 
 // ── Director backend selection ─────────────────────────────
-// 'cloud' = Anthropic Messages API (Sonnet/Haiku).
-// 'local' = Ollama OpenAI-compatible endpoint (e.g. Qwen-32B) via getOllamaUrl().
-function getDirectorBackend(): 'cloud' | 'local' {
-	return (envVar('DIRECTOR_BACKEND') || 'cloud').toLowerCase() === 'local' ? 'local' : 'cloud';
+// 'cloud'       = Anthropic Messages API (Sonnet/Haiku).
+// 'local'       = Ollama OpenAI-compatible endpoint (e.g. Qwen-32B) via getOllamaUrl().
+// 'agentrouter' = AgentRouter OAI-compatible gateway (https://agentrouter.org/v1).
+function getDirectorBackend(): 'cloud' | 'local' | 'agentrouter' {
+	const val = (envVar('DIRECTOR_BACKEND') || 'cloud').toLowerCase();
+	if (val === 'local') return 'local';
+	if (val === 'agentrouter') return 'agentrouter';
+	return 'cloud';
 }
 function getLocalDirectorModel(): string {
 	return envVar('LOCAL_DIRECTOR_MODEL') || 'qwen2.5:32b-instruct';
+}
+function getAgentRouterModel(): string {
+	return envVar('AGENTROUTER_MODEL') || 'claude-opus-4-6';
 }
 
 // Anthropic-shaped request the loop builds; both backends consume it and return
@@ -62,7 +69,10 @@ type DirectorRequest = {
 type NormalizedResponse = { content: any[]; stop_reason: string; usage?: any };
 
 async function callDirectorLLM(req: DirectorRequest): Promise<NormalizedResponse> {
-	return getDirectorBackend() === 'local' ? callLocalDirector(req) : callCloudDirector(req);
+	const backend = getDirectorBackend();
+	if (backend === 'local') return callLocalDirector(req);
+	if (backend === 'agentrouter') return callAgentRouterDirector(req);
+	return callCloudDirector(req);
 }
 
 async function callCloudDirector(req: DirectorRequest): Promise<NormalizedResponse> {
@@ -92,11 +102,14 @@ async function callCloudDirector(req: DirectorRequest): Promise<NormalizedRespon
 	return await response.json();
 }
 
-// Translate the Anthropic-shaped request to OpenAI chat-completions, call Ollama,
-// and translate the reply back to Anthropic content blocks. cache_control is dropped
-// (no-op here); the system array is flattened to one string; tool_use/tool_result
-// blocks become tool_calls / role:"tool" messages.
-async function callLocalDirector(req: DirectorRequest): Promise<NormalizedResponse> {
+// Shared translator: Anthropic-shaped request → OAI chat-completions → Anthropic content blocks.
+// cache_control is dropped; system array is flattened; tool_use/tool_result become tool_calls/role:"tool".
+async function callOAICompatibleDirector(
+	url: string,
+	extraHeaders: Record<string, string>,
+	model: string,
+	req: DirectorRequest
+): Promise<NormalizedResponse> {
 	const { system, messages, tools, enforcementMode } = req;
 
 	const systemText = system.map((b) => b.text).join('\n\n');
@@ -142,11 +155,11 @@ async function callLocalDirector(req: DirectorRequest): Promise<NormalizedRespon
 		function: { name: t.name, description: t.description, parameters: t.input_schema }
 	}));
 
-	const response = await fetch(getOllamaUrl(), {
+	const response = await fetch(url, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...extraHeaders },
 		body: JSON.stringify({
-			model: getLocalDirectorModel(),
+			model,
 			max_tokens: 1024,
 			temperature: 0.8,
 			messages: oaiMessages,
@@ -155,7 +168,7 @@ async function callLocalDirector(req: DirectorRequest): Promise<NormalizedRespon
 		})
 	});
 	if (!response.ok) {
-		throw new Error(`Local model ${response.status}: ${(await response.text()).substring(0, 200)}`);
+		throw new Error(`${url} ${response.status}: ${(await response.text()).substring(0, 200)}`);
 	}
 
 	const data = await response.json();
@@ -187,6 +200,20 @@ async function callLocalDirector(req: DirectorRequest): Promise<NormalizedRespon
 		: undefined;
 
 	return { content, stop_reason, usage };
+}
+
+function callLocalDirector(req: DirectorRequest): Promise<NormalizedResponse> {
+	return callOAICompatibleDirector(getOllamaUrl(), {}, getLocalDirectorModel(), req);
+}
+
+function callAgentRouterDirector(req: DirectorRequest): Promise<NormalizedResponse> {
+	const key = envVar('AGENTROUTER_API_KEY') || '';
+	return callOAICompatibleDirector(
+		'https://agentrouter.org/v1/chat/completions',
+		{ Authorization: `Bearer ${key}` },
+		getAgentRouterModel(),
+		req
+	);
 }
 
 // ── Tool Definitions for Claude ────────────────────────────
