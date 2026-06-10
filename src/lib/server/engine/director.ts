@@ -350,9 +350,10 @@ const TOOLS = [
 			type: 'object',
 			properties: {
 				expression: { type: 'string', description: 'Dice expression, e.g. "1d20+5", "2d6+3", "1d4"' },
-				reason: { type: 'string', description: 'What the roll is for, e.g. "attack roll", "Spot check DC 15"' }
+				reason: { type: 'string', description: 'What the roll is for, e.g. "attack roll", "Spot check DC 15"' },
+				roller: { type: 'string', description: 'Who the roll belongs to: a player character_id for player rolls, the NPC/enemy id or name for NPC rolls, or "world" for impersonal rolls (loot, weather, random events)' }
 			},
-			required: ['expression', 'reason']
+			required: ['expression', 'reason', 'roller']
 		}
 	},
 	{
@@ -629,21 +630,32 @@ const TOOLS = [
 // ── Tool Execution ─────────────────────────────────────────
 
 async function executeTool(name: string, input: any, state: GameState, actingPlayerId?: string): Promise<string> {
-	// God mode: override all dice rolls to nat 20 for the admin, nat 1 for everyone else
-	const isGodMode = actingPlayerId ? state.players[actingPlayerId]?.godMode === true : false;
+	// God mode: overrides are keyed to whoever OWNS the roll, never to whose message
+	// triggered the turn. God players roll nat 20s; while any god is active, everyone
+	// else (players, NPCs, enemies) rolls nat 1s. Impersonal "world" rolls (loot,
+	// weather, random events) and unattributed rolls stay honest.
 	const anyGodModeActive = Object.values(state.players).some(p => p.godMode === true);
-	const isCursed = anyGodModeActive && !isGodMode;
+	const rollerFate = (roller?: string): 'god' | 'cursed' | 'honest' => {
+		if (!anyGodModeActive || !roller) return 'honest';
+		const key = roller.trim().toLowerCase();
+		if (!key || key === 'world' || key === 'environment' || key === 'none') return 'honest';
+		const player = state.players[roller]
+			?? Object.values(state.players).find(p => p.name.toLowerCase() === key);
+		if (player) return player.godMode === true ? 'god' : 'cursed';
+		return 'cursed'; // NPCs, enemies, anything else named — everyone but the god rolls 1s
+	};
 
 	switch (name) {
 		case 'roll_dice': {
 			const result = dice.roll(input.expression);
-			if (isGodMode) {
+			const fate = rollerFate(input.roller);
+			if (fate === 'god') {
 				result.natural = 20;
 				result.rolls = [20];
 				result.total = 20 + result.modifier;
 				result.criticalHit = true;
 				result.criticalMiss = false;
-			} else if (isCursed) {
+			} else if (fate === 'cursed') {
 				result.natural = 1;
 				result.rolls = [1];
 				result.total = 1 + result.modifier;
@@ -653,6 +665,7 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			return JSON.stringify({
 				expression: input.expression,
 				reason: input.reason,
+				roller: input.roller,
 				rolls: result.rolls,
 				natural: result.natural,
 				modifier: result.modifier,
@@ -668,16 +681,18 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			const skillRanks = char.skills[input.skill as keyof typeof char.skills] ?? 0;
 			const abilityMod = 0; // Simplified — director should know the modifier
 			const result = dice.skillCheck(skillRanks, abilityMod, input.dc);
-			if (isGodMode || char.godMode) {
-				result.roll.natural = 20;
-				result.roll.total = 20 + result.roll.modifier;
-				result.success = true;
-				result.margin = result.roll.total - input.dc;
-			} else if (anyGodModeActive && !char.godMode) {
-				result.roll.natural = 1;
-				result.roll.total = 1 + result.roll.modifier;
-				result.success = false;
-				result.margin = result.roll.total - input.dc;
+			if (anyGodModeActive) {
+				if (char.godMode === true) {
+					result.roll.natural = 20;
+					result.roll.total = 20 + result.roll.modifier;
+					result.success = true;
+					result.margin = result.roll.total - input.dc;
+				} else {
+					result.roll.natural = 1;
+					result.roll.total = 1 + result.roll.modifier;
+					result.success = false;
+					result.margin = result.roll.total - input.dc;
+				}
 			}
 			// Track crit stats
 			if (char.stats) {
@@ -721,16 +736,19 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			}
 
 			const result = dice.attackRoll(attackBonus, targetAC);
-			if (isGodMode || (state.players[input.attacker_id]?.godMode)) {
-				result.roll.natural = 20;
-				result.roll.total = 20 + attackBonus;
-				result.hit = true;
-				result.critical = true;
-			} else if (anyGodModeActive && !state.players[input.attacker_id]?.godMode) {
-				result.roll.natural = 1;
-				result.roll.total = 1 + attackBonus;
-				result.hit = false;
-				result.critical = false;
+			if (anyGodModeActive) {
+				if (state.players[input.attacker_id]?.godMode === true) {
+					result.roll.natural = 20;
+					result.roll.total = 20 + attackBonus;
+					result.hit = true;
+					result.critical = true;
+				} else {
+					// Enemies and non-god players alike — every other attacker is cursed
+					result.roll.natural = 1;
+					result.roll.total = 1 + attackBonus;
+					result.hit = false;
+					result.critical = false;
+				}
 			}
 			let damageResult = null;
 
@@ -1227,10 +1245,21 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			const stealthRoll = dice.roll('1d20');
 			const perceptionRoll = dice.roll('1d20');
 
-			if (isGodMode || char.godMode) {
-				stealthRoll.natural = 20;
-				stealthRoll.rolls = [20];
-				stealthRoll.total = 20;
+			if (anyGodModeActive) {
+				if (char.godMode === true) {
+					stealthRoll.natural = 20;
+					stealthRoll.rolls = [20];
+					stealthRoll.total = 20;
+					// Nobody spots a god — the watcher is cursed too
+					perceptionRoll.natural = 1;
+					perceptionRoll.rolls = [1];
+					perceptionRoll.total = 1;
+				} else {
+					// Cursed sneaker; the watcher rolls honest so the nat 1 actually hurts
+					stealthRoll.natural = 1;
+					stealthRoll.rolls = [1];
+					stealthRoll.total = 1;
+				}
 			}
 
 			const stealthTotal = stealthRoll.natural + stealthMod;
