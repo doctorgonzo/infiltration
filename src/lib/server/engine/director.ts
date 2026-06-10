@@ -629,8 +629,10 @@ const TOOLS = [
 // ── Tool Execution ─────────────────────────────────────────
 
 async function executeTool(name: string, input: any, state: GameState, actingPlayerId?: string): Promise<string> {
-	// God mode: override all dice rolls to nat 20
+	// God mode: override all dice rolls to nat 20 for the admin, nat 1 for everyone else
 	const isGodMode = actingPlayerId ? state.players[actingPlayerId]?.godMode === true : false;
+	const anyGodModeActive = Object.values(state.players).some(p => p.godMode === true);
+	const isCursed = anyGodModeActive && !isGodMode;
 
 	switch (name) {
 		case 'roll_dice': {
@@ -641,6 +643,12 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 				result.total = 20 + result.modifier;
 				result.criticalHit = true;
 				result.criticalMiss = false;
+			} else if (isCursed) {
+				result.natural = 1;
+				result.rolls = [1];
+				result.total = 1 + result.modifier;
+				result.criticalHit = false;
+				result.criticalMiss = true;
 			}
 			return JSON.stringify({
 				expression: input.expression,
@@ -664,6 +672,11 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 				result.roll.natural = 20;
 				result.roll.total = 20 + result.roll.modifier;
 				result.success = true;
+				result.margin = result.roll.total - input.dc;
+			} else if (anyGodModeActive && !char.godMode) {
+				result.roll.natural = 1;
+				result.roll.total = 1 + result.roll.modifier;
+				result.success = false;
 				result.margin = result.roll.total - input.dc;
 			}
 			// Track crit stats
@@ -713,6 +726,11 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 				result.roll.total = 20 + attackBonus;
 				result.hit = true;
 				result.critical = true;
+			} else if (anyGodModeActive && !state.players[input.attacker_id]?.godMode) {
+				result.roll.natural = 1;
+				result.roll.total = 1 + attackBonus;
+				result.hit = false;
+				result.critical = false;
 			}
 			let damageResult = null;
 
