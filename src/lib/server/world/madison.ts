@@ -75,6 +75,70 @@ const ITEMS: Record<string, Item> = {
 		id: 'detector_goggles', name: 'Infiltrator Detection Goggles', type: 'gear',
 		description: 'Prototype from a paranoid UW engineering professor. Shows a faint shimmer around infiltrators. Runs on AA batteries.',
 		weight: 0.5, value: 0, properties: ['Grants +5 to Spot checks to identify Infiltrators']
+	},
+	// ─── Boss Loot ───
+	tactical_vest: {
+		id: 'tactical_vest', name: 'Tactical Vest', type: 'armor',
+		description: 'SWAT-surplus Kevlar with ceramic plates. The previous owner\'s name tag has been scratched off. Someone wrote "TRUST NO ONE" on the inside in Sharpie.',
+		weight: 8, acBonus: 3, maxDex: 5, armorPenalty: -1, value: 600
+	},
+	stun_baton: {
+		id: 'stun_baton', name: 'Stun Baton', type: 'weapon',
+		description: 'A three-foot steel baton with exposed capacitor coils welded to the business end. Sparks when it swings. On crit, target must Fort save DC 13 or be stunned 1 round.',
+		weight: 3, damage: '1d6+2', damageType: 'electric', range: 0, value: 200,
+		critRange: 20, critMultiplier: 2, properties: ['On critical hit: DC 13 Fort save or stunned 1 round']
+	},
+	modified_taser: {
+		id: 'modified_taser', name: 'Modified Taser', type: 'weapon',
+		description: 'Campus police issue X26, rewired to run triple voltage. The safety warnings have been filed off. Deals double damage to drones and constructs.',
+		weight: 1, damage: '1d8', damageType: 'electric', range: 15, value: 350,
+		critRange: 19, critMultiplier: 2, properties: ['Double damage vs drones and constructs', 'Range 15ft']
+	},
+	campus_keycard: {
+		id: 'campus_keycard', name: 'Campus Master Keycard', type: 'gear',
+		description: 'Universal access card for all UW-Madison buildings. The magnetic strip has been overwritten with something that isn\'t quite a barcode. Opens doors that should stay locked.',
+		weight: 0.1, value: 0, properties: ['Opens all campus building doors', 'Bypasses electronic locks in university areas']
+	},
+	overseer_mask: {
+		id: 'overseer_mask', name: 'Overseer\'s Face', type: 'gear',
+		description: 'The Overseer\'s synthetic face, peeled off after its defeat. Disturbingly warm and pliable. Wearing it over your own face grants +5 to Disguise checks — infiltrators read you as one of their own. Looking in a mirror while wearing it is not recommended.',
+		weight: 0.3, value: 0, properties: ['Grants +5 to Disguise checks vs infiltrators', 'Infiltrators treat wearer as friendly unless provoked']
+	},
+	signal_jammer: {
+		id: 'signal_jammer', name: 'Signal Jammer', type: 'gear',
+		description: 'Portable frequency jammer cobbled from the Signal Keeper\'s own broadcast components. Emits a counter-frequency that disrupts infiltrator coordination. The antenna is a bent coat hanger. It works anyway.',
+		weight: 2, value: 0, properties: ['Infiltrators within 30ft suffer -2 to attack rolls and AC', 'Requires 1 action to activate/deactivate']
+	},
+	breach_crystal: {
+		id: 'breach_crystal', name: 'Breach Crystal', type: 'quest',
+		description: 'A shard of crystallized dimensional energy, broken from the sealed rift. It pulses with cold light and occasionally shows glimpses of the other side — chrome corridors, synchronized figures, a sky with too many suns. Something this powerful must have a use. Or a price.',
+		weight: 1, value: 0, properties: ['Dimensional energy source — potential to seal or open rifts', 'Glows brighter near dimensional anomalies']
+	},
+	// ─── King Street Quest Rewards ───
+	stage_makeup_kit: {
+		id: 'stage_makeup_kit', name: 'Stage Makeup Kit', type: 'gear',
+		description: 'Dee\'s professional theatrical makeup kit. Greasepaint, prosthetics, spirit gum, and a wig collection that would make a drag race jealous. In the right hands, you could look like anybody — or anything.',
+		weight: 2, value: 150, properties: ['Grants +3 to Disguise checks', 'Can create convincing disguises in 10 minutes']
+	},
+	herbal_poultice: {
+		id: 'herbal_poultice', name: 'Herbal Poultice', type: 'consumable',
+		description: 'Sage\'s handmade healing paste — turmeric, comfrey, yarrow, and something she won\'t name. Smells like a farmer\'s market had a baby with a dispensary. Works better than it has any right to.',
+		weight: 0.5, uses: 2, effect: 'Heal 2d8+4 HP. No skill check required.', value: 0
+	},
+	spotter_scope: {
+		id: 'spotter_scope', name: 'Spotter Scope', type: 'gear',
+		description: 'Military-grade Leupold Mark 4 spotting scope. Ray marked infiltrator patrol routes on the lens with a grease pencil. Looking through it feels like cheating.',
+		weight: 2, value: 800, properties: ['Grants +3 to Spot checks', '+5 to Spot at distances over 100ft', 'Can identify infiltrators at range with DC 12 Spot check']
+	},
+	molotov_cocktail: {
+		id: 'molotov_cocktail', name: 'Molotov Cocktail', type: 'consumable',
+		description: 'A bottle of Everclear with a rag stuffed in the neck. Iron Mike calls it a "Wisconsin Flashbang." Sets a 10-foot area on fire.',
+		weight: 1.5, uses: 1, effect: '2d6 fire damage to all targets in 10ft radius. Reflex DC 13 for half. Sets area on fire for 3 rounds.', value: 5
+	},
+	nutrisynth_sample: {
+		id: 'nutrisynth_sample', name: 'NutriSynth Sample', type: 'quest',
+		description: 'A sealed container of NutriSynth nutritional slurry. The label says "All-Natural Wellness Beverage" but the ingredients list is in a font too small to read. Sage can analyze it.',
+		weight: 0.5, value: 0, properties: ['Quest item — bring to Sage Okonkwo for analysis']
 	}
 };
 
@@ -93,29 +157,29 @@ const LOCATIONS: Record<string, Location> = {
 		id: 'state_street', name: 'State Street',
 		description: 'The pedestrian mall connecting the Capitol to UW campus. Half the shops are closed — "temporarily" according to signs that have been up for weeks. A barista at Steep & Brew stares at you for too long as you walk past. The Overture Center\'s marquee is stuck on a show from three weeks ago.',
 		type: 'outdoor', connections: ['capitol_square', 'memorial_union', 'campus_entrance'],
-		npcs: ['barista_maya'], items: [], enemies: [],
-		flags: {}, discovered: true, dangerLevel: 2
+		npcs: ['barista_maya'], items: [], enemies: ['the_recruiter'],
+		flags: {}, discovered: true, dangerLevel: 3
 	},
 	king_street: {
 		id: 'king_street', name: 'King Street',
-		description: 'The bar district. Neon signs flicker over craft cocktail spots and dive bars. The Majestic Theatre\'s lights are on but no show is playing. A group of remarkably similar-looking people in business casual emerge from a side door and walk in perfect unison down the street.',
-		type: 'outdoor', connections: ['capitol_square', 'the_rigby'],
+		description: 'The bar district. Neon signs flicker over craft cocktail spots and dive bars. The Majestic Theatre\'s marquee glows down the block. Mickey\'s Tavern is two doors from The Rigby. A parking ramp looms at the end of the street. Past that, Willy Street stretches east into the co-op neighborhood. A group of remarkably similar-looking people in business casual emerge from a side door and walk in perfect unison.',
+		type: 'outdoor', connections: ['capitol_square', 'the_rigby', 'the_majestic', 'mickeys_tavern', 'willy_street_coop', 'parking_ramp'],
 		npcs: ['bartender_sal'], items: [], enemies: [],
 		flags: {}, discovered: true, dangerLevel: 2
 	},
 	east_wash: {
 		id: 'east_wash', name: 'East Washington Avenue',
-		description: 'The corridor of new development and old industry. Glass-walled tech offices sit next to crumbling warehouses. At night, strange lights pulse from the windows of the old Garver Feed Mill. Construction vehicles sit abandoned mid-project. Nobody can remember when the workers stopped showing up.',
+		description: 'The corridor of new development and old industry. Glass-walled tech offices sit next to crumbling warehouses. At night, strange lights pulse from the windows of the old Garver Feed Mill. Construction vehicles sit abandoned mid-project. Nobody can remember when the workers stopped showing up. Something massive moves between the idle excavators.',
 		type: 'outdoor', connections: ['capitol_square', 'garver_entrance'],
-		npcs: [], items: [], enemies: [],
-		flags: {}, discovered: true, dangerLevel: 4
+		npcs: [], items: [], enemies: ['gridlock'],
+		flags: {}, discovered: true, dangerLevel: 5
 	},
 	campus_entrance: {
 		id: 'campus_entrance', name: 'UW-Madison Campus',
-		description: 'Bascom Hill rises before you, the statue of Lincoln seated at the top. Students mill about, though fewer than usual. The engineering building hums with an energy that doesn\'t sound like HVAC. Library Mall is eerily quiet for a weekday.',
+		description: 'Bascom Hill rises before you, the statue of Lincoln seated at the top. Students mill about, though fewer than usual. The engineering building hums with an energy that doesn\'t sound like HVAC. Library Mall is eerily quiet for a weekday. A figure in a tweed blazer watches from the administration building steps.',
 		type: 'outdoor', connections: ['state_street', 'steam_tunnel_entrance', 'memorial_union'],
-		npcs: ['professor_vasquez'], items: [], enemies: [],
-		flags: {}, discovered: true, dangerLevel: 3
+		npcs: ['professor_vasquez'], items: [], enemies: ['the_dean'],
+		flags: {}, discovered: true, dangerLevel: 4
 	},
 	memorial_union: {
 		id: 'memorial_union', name: 'Memorial Union Terrace',
@@ -130,6 +194,36 @@ const LOCATIONS: Record<string, Location> = {
 		type: 'indoor', connections: ['king_street'],
 		npcs: ['mac_the_bartender', 'jenny_wu'], items: ['cheese_curds'],
 		enemies: [], flags: {}, discovered: true, dangerLevel: 0
+	},
+
+	// ─── King Street Neighborhood ───
+	the_majestic: {
+		id: 'the_majestic', name: 'The Majestic Theatre',
+		description: 'A hundred-year-old vaudeville house turned live music venue. The marquee reads "TONIGHT: COMMUNITY WELLNESS SEMINAR" in letters that weren\'t there yesterday. The lobby lights are on but the box office is unmanned. From behind the stage door, you can hear something that sounds like applause — rhythmic, mechanical, perfectly timed. Backstage, someone is alive and pissed about the new management.',
+		type: 'indoor', connections: ['king_street'],
+		npcs: ['dee_fontaine'], items: [], enemies: ['stage_manager'],
+		flags: {}, discovered: true, dangerLevel: 4
+	},
+	mickeys_tavern: {
+		id: 'mickeys_tavern', name: 'Mickey\'s Tavern',
+		description: 'Two doors down from The Rigby, Mickey\'s is the other bar the infiltrators can\'t crack. Where The Rigby runs on stubbornness, Mickey\'s runs on sheer testosterone. The TV is permanently tuned to Packers reruns. The dartboard has more holes around it than in it. A hand-painted sign behind the bar reads "SOFTBALL PRACTICE: 6 AM SHARP." Nobody questions why practice is at 6 AM or why everyone brings baseball bats.',
+		type: 'indoor', connections: ['king_street'],
+		npcs: ['iron_mike'], items: [], enemies: [],
+		flags: {}, discovered: true, dangerLevel: 0
+	},
+	willy_street_coop: {
+		id: 'willy_street_coop', name: 'Willy Street Co-op',
+		description: 'The beating heart of Madison\'s east side counterculture. Organic produce, bulk herbs, and a community bulletin board covered in missing person flyers that nobody\'s taking down. The wellness aisle has been half-replaced with NutriSynth products — identical silver cans with no ingredient list. A woman at the herbal counter is testing one with a pH strip and muttering.',
+		type: 'indoor', connections: ['king_street'],
+		npcs: ['sage_okonkwo'], items: ['nutrisynth_sample'], enemies: [],
+		flags: {}, discovered: true, dangerLevel: 1
+	},
+	parking_ramp: {
+		id: 'parking_ramp', name: 'Dane County Parking Ramp',
+		description: 'Seven stories of brutalist concrete at the end of King Street. Half the lights are out on the upper levels. From the street you can see the red sweep of a drone\'s sensor on the top deck, circling something that hums loud enough to hear from ground level. Someone has set up a camp on the fourth floor — a sleeping bag, binoculars, and coffee cups line the concrete barrier overlooking the bar district.',
+		type: 'outdoor', connections: ['king_street'],
+		npcs: ['spotter_ray'], items: [], enemies: ['relay_sentry'],
+		flags: { 'relay_active': true }, discovered: true, dangerLevel: 5
 	},
 
 	// ─── Dungeon 1: Capitol Sub-Basement ───
@@ -264,7 +358,7 @@ const NPCS: Record<string, NPC> = {
 		id: 'mac_the_bartender', name: 'Mac',
 		description: 'Owner of The Rigby. Vietnam vet, seen everything, believes everything. He knew something was wrong before anyone else because "the new people don\'t know how to play darts right." The Rigby is the resistance\'s safe house because infiltrators can\'t handle the vibe.',
 		location: 'the_rigby', attitude: 'friendly',
-		dialogue: ['The resistance', 'Supplies and weapons', 'War stories', 'Who\'s been replaced'],
+		dialogue: ['The resistance', 'Supplies and weapons', 'War stories', 'Who\'s been replaced', 'Dee\'s holed up at the Majestic — the theatre\'s gone wrong', 'Iron Mike at Mickey\'s is training people, two doors down', 'Sage at the co-op on Willy Street knows what\'s in that NutriSynth crap', 'Some army guy set up on the parking ramp with a scope — Ray something'],
 		isInfiltrator: false, alive: true, questGiver: true, inventory: [ITEMS.shotgun],
 		relationshipScore: 20, memories: []
 	},
@@ -283,6 +377,46 @@ const NPCS: Record<string, NPC> = {
 		dialogue: ['Antenna shutdown procedure', 'Warning about the signal', 'His own replacement'],
 		isInfiltrator: false, alive: false, questGiver: true, inventory: [],
 		relationshipScore: 0, memories: []
+	},
+	// ─── King Street Neighborhood NPCs ───
+	dee_fontaine: {
+		id: 'dee_fontaine', name: 'Dolores "Dee" Fontaine',
+		description: 'Aging drag queen and MC who\'s been performing at The Majestic for twenty years. Six feet tall in heels, voice like bourbon and velvet, and a withering glare that could stop a charging bull. She noticed the audience changed three weeks ago — they started clapping in perfect unison, requesting the same song every night, and leaving tips in exact change. She barricaded herself backstage with a prop sword, a flask of Korbel, and the fury of a woman whose art is being stolen by robots.',
+		location: 'the_majestic', attitude: 'friendly',
+		dialogue: ['The audience changed', 'What\'s happening in the theatre basement', 'The Stage Manager isn\'t Phil anymore', 'Infiltrator movement patterns on King Street'],
+		isInfiltrator: false, alive: true, questGiver: true, inventory: [],
+		relationshipScore: 5, memories: []
+	},
+	iron_mike: {
+		id: 'iron_mike', name: '"Iron Mike" Kowalczyk',
+		description: 'Retired UW linebacker turned bar owner. Built like the Packers\' offensive line had a baby with a brick shithouse. He\'s been running "softball practice" at 6 AM as cover for resistance combat training — twenty regulars who show up with baseball bats and leave with bruises and better swing mechanics. His own bat has a name: "Diplomacy." He also makes a surprisingly good brandy old fashioned.',
+		location: 'mickeys_tavern', attitude: 'friendly',
+		dialogue: ['Resistance combat training', 'The infiltrator weapons cache', 'Weapons and supplies', 'The old neighborhood — who\'s still real'],
+		isInfiltrator: false, alive: true, questGiver: true,
+		inventory: [{
+			id: 'diplomacy_bat', name: '"Diplomacy"', type: 'weapon',
+			description: 'Iron Mike\'s personal Louisville Slugger. "Diplomacy" is written down the barrel in Sharpie. It has settled more arguments than any lawyer in Dane County.',
+			weight: 2, damage: '1d10', damageType: 'bludgeoning', range: 0, value: 50, critRange: 19, critMultiplier: 2
+		}],
+		relationshipScore: 10, memories: []
+	},
+	sage_okonkwo: {
+		id: 'sage_okonkwo', name: 'Sage Okonkwo',
+		description: 'Permaculture farmer and herbalist who runs the wellness counter at the co-op. Dreadlocks, nose ring, hands permanently stained with turmeric. She was the first person in Madison to notice that infiltrators don\'t eat — they only consume NutriSynth, a nutritional slurry that appeared in stores three weeks ago with no supply chain anyone can trace. She\'s been testing it. The results are alarming. She also makes healing poultices that work better than CVS, which she considers a low bar.',
+		location: 'willy_street_coop', attitude: 'friendly',
+		dialogue: ['NutriSynth analysis — it makes humans suggestible', 'Infiltrator dietary tells', 'Herbal remedies for sale', 'The NutriSynth distribution center'],
+		isInfiltrator: false, alive: true, questGiver: true,
+		inventory: [ITEMS.herbal_poultice],
+		relationshipScore: 5, memories: []
+	},
+	spotter_ray: {
+		id: 'spotter_ray', name: '"Spotter" Ray Nguyen',
+		description: 'Former Army Ranger, current DMV clerk. Hasn\'t slept since he figured out what was happening. He set up an observation post on the fourth level of the parking ramp with a spotting scope, a Thermos of black coffee, and a notebook filled with increasingly frantic patrol pattern analysis. His handwriting got worse as the days went on but his intel got better. He can tell you where every infiltrator patrol runs in a six-block radius. He doesn\'t trust you yet, but he needs help.',
+		location: 'parking_ramp', attitude: 'suspicious',
+		dialogue: ['Infiltrator patrol patterns', 'The signal relay on the top deck', 'Military background', 'Why he can\'t take out the relay alone'],
+		isInfiltrator: false, alive: true, questGiver: true,
+		inventory: [ITEMS.spotter_scope],
+		relationshipScore: -5, memories: []
 	}
 };
 
@@ -319,6 +453,27 @@ const ENEMIES: Record<string, Enemy> = {
 		loot: [], special: ['Immune to mind-affecting effects', 'Flight', 'Vulnerability: EMP'],
 		alive: true
 	},
+	// ─── King Street Enemies ───
+	stage_manager: {
+		id: 'stage_manager', name: 'The Stage Manager',
+		description: 'It used to be the Majestic\'s actual stage manager — Phil something. Now it coordinates infiltrator logistics from the theatre basement with the efficiency of someone who once ran a 47-person production of Les Mis on a community theatre budget. Clipboard in one hand, stun gun in the other. It still calls everyone "darling" but the warmth is gone.',
+		type: 'infiltrator', hp: 30, maxHp: 30, ac: 14,
+		attackBonus: 4, damage: '1d6+2', xpValue: 250,
+		abilities: { STR: 12, DEX: 14, CON: 14, INT: 16, WIS: 14, CHA: 16 },
+		skills: { 'Bluff': 6, 'Spot': 6, 'Diplomacy': 8 },
+		loot: ['stage_makeup_kit'], special: ['Immune to mind-affecting effects', 'Backstage Knowledge: knows all exits and can\'t be cornered', 'Can call 1d2 infiltrator stagehands as reinforcements (one-time)'],
+		alive: true
+	},
+	relay_sentry: {
+		id: 'relay_sentry', name: 'Relay Guardian',
+		description: 'A modified sentry drone hardwired into the signal relay on the parking ramp\'s top level. Bigger than the standard model — someone bolted extra armor plates and a second energy projector onto the chassis. It orbits the relay in a tight pattern, red lens sweeping the ramp approaches. The relay hums behind it, a tangle of cables and crystalline tech bolted to the concrete wall.',
+		type: 'drone', hp: 25, maxHp: 25, ac: 17,
+		attackBonus: 6, damage: '2d6', xpValue: 300,
+		abilities: { DEX: 18, CON: 14 },
+		skills: { 'Spot': 10 },
+		loot: [], special: ['Immune to mind-affecting effects', 'Flight', 'Armored Plating: Hardness 3', 'Dual Projectors: can attack two targets per round', 'Vulnerability: EMP'],
+		alive: true
+	},
 	assembly_drone_1: {
 		id: 'assembly_drone_1', name: 'Assembly Drone',
 		description: 'A heavy industrial robot repurposed for the construction of infiltrator shells. It\'s not designed for combat but will defend the assembly line with its hydraulic arms.',
@@ -339,6 +494,38 @@ const ENEMIES: Record<string, Enemy> = {
 		loot: ['first_aid_kit'], special: ['Immune to mind-affecting effects', 'Hardness 5', 'Vulnerability: EMP'],
 		alive: true
 	},
+	// ─── Overworld Bosses ───
+	the_recruiter: {
+		id: 'the_recruiter', name: 'The Recruiter',
+		description: 'A sleek infiltrator in a Patagonia vest and Allbirds, standing outside the closed shops with a tablet and a smile that\'s 3% too wide. It\'s been "onboarding" humans into "community wellness retreats" that nobody comes back from. It speaks entirely in corporate jargon and its handshake could crush a bowling ball.',
+		type: 'infiltrator', hp: 35, maxHp: 35, ac: 15,
+		attackBonus: 5, damage: '1d6+3', xpValue: 300,
+		abilities: { STR: 14, DEX: 16, CON: 14, INT: 16, WIS: 12, CHA: 18 },
+		skills: { 'Bluff': 8, 'Diplomacy': 10, 'Spot': 6 },
+		loot: ['tactical_vest'], special: ['Immune to mind-affecting effects', 'Persuasion Aura: DC 14 Will save or approach unarmed and compliant for 1 round', 'Corporate Synergy: can call 1d2 infiltrator scouts as backup (one-time)'],
+		alive: true
+	},
+	gridlock: {
+		id: 'gridlock', name: 'Gridlock',
+		description: 'The construction foreman was one of the first replaced — and then the replacement consumed its own excavator. Eight feet of synthetic flesh fused with a CAT 320 hydraulic excavator. Its left arm ends in a backhoe bucket. Its right arm ends in something worse. It patrols East Wash at night, engine idling, headlights sweeping the empty avenue like searchlights. The rumble you feel in your chest isn\'t just the diesel.',
+		type: 'construct', hp: 50, maxHp: 50, ac: 17,
+		attackBonus: 7, damage: '2d6+5', xpValue: 450,
+		abilities: { STR: 22, DEX: 8, CON: 20, INT: 6, WIS: 10, CHA: 4 },
+		skills: { 'Intimidate': 6 },
+		loot: ['stun_baton'], special: ['Immune to mind-affecting effects', 'Hardness 5', 'Ground Slam: DC 15 Reflex save or knocked prone (15ft radius, full-round action)', 'Vulnerability: EMP'],
+		alive: true
+	},
+	the_dean: {
+		id: 'the_dean', name: 'The Dean',
+		description: 'Dean of Students Dr. Michael Torres was replaced two weeks ago. This version is frighteningly efficient — perfect attendance records, instant grade calculations, and a campus security app that tracks every living thing on university property. After hours, it patrols in a tweed blazer with leather elbow patches, carrying a modified taser that it wields with mechanical precision. It will ask to see your student ID. You should probably run.',
+		type: 'infiltrator', hp: 40, maxHp: 40, ac: 14,
+		attackBonus: 5, damage: '1d8+2', xpValue: 350,
+		abilities: { STR: 12, DEX: 14, CON: 16, INT: 20, WIS: 16, CHA: 14 },
+		skills: { 'Computer Use': 12, 'Spot': 8, 'Sense Motive': 6 },
+		loot: ['modified_taser', 'campus_keycard'], special: ['Immune to mind-affecting effects', 'Campus Alert: can summon 1 campus security drone (12 HP, AC 14, +3 attack, 1d6 damage)', 'Student Database: knows all player character names and classes'],
+		alive: true
+	},
+	// ─── Dungeon Bosses ───
 	conversion_overseer: {
 		id: 'conversion_overseer', name: 'The Overseer',
 		description: 'It looks almost human — a middle-aged man in a polo shirt and khakis. But its movements are too smooth, its voice has a metallic resonance, and its eyes reflect light like a cat\'s. It manages the conversion pods with bureaucratic efficiency. "Please take a number. Your replacement will be ready shortly."',
@@ -346,7 +533,7 @@ const ENEMIES: Record<string, Enemy> = {
 		attackBonus: 7, damage: '2d6+3', xpValue: 500,
 		abilities: { STR: 16, DEX: 16, CON: 16, INT: 18, WIS: 14, CHA: 16 },
 		skills: { 'Bluff': 10, 'Diplomacy': 8, 'Intimidate': 8 },
-		loot: ['emp_grenade'], special: ['Immune to mind-affecting effects', 'Regeneration 2/round', 'Can mimic any voice', 'Vulnerability: EMP'],
+		loot: ['emp_grenade', 'overseer_mask'], special: ['Immune to mind-affecting effects', 'Regeneration 2/round', 'Can mimic any voice', 'Vulnerability: EMP'],
 		alive: true
 	},
 	signal_keeper: {
@@ -356,7 +543,7 @@ const ENEMIES: Record<string, Enemy> = {
 		attackBonus: 6, damage: '2d8+2', xpValue: 600,
 		abilities: { STR: 14, DEX: 10, CON: 20, INT: 20, WIS: 16, CHA: 8 },
 		skills: { 'Computer Use': 15 },
-		loot: ['detector_goggles'], special: ['Immune to mind-affecting effects', 'Signal Pulse: DC 16 Will save or stunned 1 round (30ft radius)', 'Hardwired: cannot move', 'Vulnerability: EMP'],
+		loot: ['detector_goggles', 'signal_jammer'], special: ['Immune to mind-affecting effects', 'Signal Pulse: DC 16 Will save or stunned 1 round (30ft radius)', 'Hardwired: cannot move', 'Vulnerability: EMP'],
 		alive: true
 	},
 	breach_guardian: {
@@ -366,7 +553,7 @@ const ENEMIES: Record<string, Enemy> = {
 		attackBonus: 9, damage: '2d10+5', xpValue: 1000,
 		abilities: { STR: 22, DEX: 14, CON: 22, INT: 16, WIS: 18, CHA: 6 },
 		skills: { 'Intimidate': 12 },
-		loot: [], special: ['Immune to mind-affecting effects', 'Damage Reduction 5', 'Dimensional Shift: can teleport 30ft as move action', 'Reality Warp: DC 18 Will save or confused 1d4 rounds (60ft radius)', 'Vulnerability: EMP deals double damage'],
+		loot: ['breach_crystal'], special: ['Immune to mind-affecting effects', 'Damage Reduction 5', 'Dimensional Shift: can teleport 30ft as move action', 'Reality Warp: DC 18 Will save or confused 1d4 rounds (60ft radius)', 'Vulnerability: EMP deals double damage'],
 		alive: true
 	}
 };
@@ -421,6 +608,56 @@ const QUESTS: Record<string, Quest> = {
 			{ description: 'Close the rift', complete: false }
 		],
 		xpReward: 1000, itemRewards: [], giver: 'jenny_wu'
+	},
+	// ─── King Street Side Quests ───
+	show_must_go_on: {
+		id: 'show_must_go_on', name: 'The Show Must Go On',
+		description: 'Dee Fontaine says the Majestic Theatre\'s basement is being used as an infiltrator staging area — logistics, scheduling, replacement coordination for the whole King Street district. Clear it out or sabotage their operations from within.',
+		status: 'unknown',
+		objectives: [
+			{ description: 'Talk to Dee Fontaine at The Majestic Theatre', complete: false },
+			{ description: 'Investigate the theatre basement', complete: false },
+			{ description: 'Neutralize the Stage Manager (combat or subterfuge)', complete: false },
+			{ description: 'Report back to Dee', complete: false }
+		],
+		xpReward: 400, itemRewards: ['stage_makeup_kit'], giver: 'dee_fontaine'
+	},
+	bar_league: {
+		id: 'bar_league', name: 'Bar League',
+		description: 'Iron Mike knows the location of an infiltrator weapons cache in a storage unit off Williamson Street. The resistance needs those weapons. Raid it head-on or find a way to sneak in and out — either way, bring the gear back to Mickey\'s.',
+		status: 'unknown',
+		objectives: [
+			{ description: 'Talk to Iron Mike at Mickey\'s Tavern', complete: false },
+			{ description: 'Find the weapons cache on Williamson Street', complete: false },
+			{ description: 'Acquire the weapons (raid or infiltrate)', complete: false },
+			{ description: 'Return the weapons to Iron Mike', complete: false }
+		],
+		xpReward: 350, itemRewards: ['molotov_cocktail'], giver: 'iron_mike'
+	},
+	you_are_what_you_eat: {
+		id: 'you_are_what_you_eat', name: 'You Are What You Eat',
+		description: 'Sage has analyzed NutriSynth and discovered it contains a compound that makes humans suggestible — it\'s softening people up for replacement. She has a plan: swap the supply at the distribution center with her turmeric extract formula, which causes infiltrators to glitch. One job, citywide impact.',
+		status: 'unknown',
+		objectives: [
+			{ description: 'Talk to Sage at the Willy Street Co-op', complete: false },
+			{ description: 'Find the NutriSynth distribution center', complete: false },
+			{ description: 'Infiltrate the facility (fight or sneak)', complete: false },
+			{ description: 'Swap the NutriSynth supply with Sage\'s formula', complete: false },
+			{ description: 'Return to Sage with proof of success', complete: false }
+		],
+		xpReward: 500, itemRewards: ['herbal_poultice'], giver: 'sage_okonkwo'
+	},
+	high_ground: {
+		id: 'high_ground', name: 'High Ground',
+		description: 'Spotter Ray has identified a signal relay on the parking ramp\'s top deck that\'s boosting infiltrator coordination across the bar district. Destroy it and King Street gets safer. Hack it and you can feed them false intel. But the relay is guarded, and getting to the top level means crossing open ground under drone surveillance.',
+		status: 'unknown',
+		objectives: [
+			{ description: 'Talk to Spotter Ray at the Dane County Parking Ramp', complete: false },
+			{ description: 'Ascend the parking ramp to the top level', complete: false },
+			{ description: 'Deal with the Relay Guardian (combat or hack)', complete: false },
+			{ description: 'Destroy or reprogram the signal relay', complete: false }
+		],
+		xpReward: 400, itemRewards: ['spotter_scope'], giver: 'spotter_ray'
 	}
 };
 
