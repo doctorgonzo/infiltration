@@ -13,8 +13,31 @@
 	let sidebarOpen = $state(true);
 	let worldTime = $state<string>('');
 	let dayNumber = $state<number>(0);
+	let quests = $state<Array<{id: string; name: string; description: string; status: string; objectives: Array<{description: string; complete: boolean}>}>>([]);
+	let questsOpen = $state(true);
 	let eventSource: EventSource | null = null;
 	let logContainer: HTMLDivElement | undefined = $state();
+
+	// ── Level-Up Celebration ──────────────────────────────
+	let lastKnownLevel = $state(0);
+	let showLevelUp = $state(false);
+	let levelUpNumber = $state(0);
+	let levelUpTimeout: ReturnType<typeof setTimeout> | null = null;
+
+	function triggerLevelUp(level: number) {
+		levelUpNumber = level;
+		showLevelUp = true;
+		if (levelUpTimeout) clearTimeout(levelUpTimeout);
+		levelUpTimeout = setTimeout(() => {
+			showLevelUp = false;
+			levelUpTimeout = null;
+		}, 4000);
+	}
+
+	function dismissLevelUp() {
+		showLevelUp = false;
+		if (levelUpTimeout) { clearTimeout(levelUpTimeout); levelUpTimeout = null; }
+	}
 
 	// ── Player Identity ────────────────────────────────────
 	let playerName = $state('');
@@ -26,6 +49,26 @@
 	let isLoadingCharacters = $state(false);
 	let deletingCharacterId = $state<string | null>(null);
 	let deleteCharacterError = $state('');
+
+	// ── Session Tracking ──────────────────────────────────
+	let sessionStartTime = $state<number>(0);
+	let sessionStartXp = $state<number>(0);
+	let sessionStartKills = $state<number>(0);
+	let sessionStartDamageDealt = $state<number>(0);
+	let sessionStartDamageTaken = $state<number>(0);
+	let sessionStartItemsFound = $state<number>(0);
+	let sessionStartActions = $state<number>(0);
+	let showSessionSummary = $state(false);
+
+	function captureSessionStart(char: Character) {
+		sessionStartTime = Date.now();
+		sessionStartXp = char.xp ?? 0;
+		sessionStartKills = char.stats?.enemiesKilled ?? 0;
+		sessionStartDamageDealt = char.stats?.damageDealt ?? 0;
+		sessionStartDamageTaken = char.stats?.damageTaken ?? 0;
+		sessionStartItemsFound = char.stats?.itemsFound ?? 0;
+		sessionStartActions = char.stats?.actionsPerformed ?? 0;
+	}
 
 	// ── Character Creation ─────────────────────────────────
 	let characterName = $state('');
@@ -315,6 +358,14 @@
 		if (nextEntries.length > 0) {
 			messages = [...messages, ...nextEntries];
 			scrollToBottom();
+
+			// Detect level-up log entries and trigger celebration
+			for (const entry of nextEntries) {
+				if (entry.type === 'system' && entry.text.includes('LEVEL UP')) {
+					const lvMatch = entry.text.match(/Level\s+(\d+)/i);
+					if (lvMatch) triggerLevelUp(parseInt(lvMatch[1], 10));
+				}
+			}
 		}
 	}
 
@@ -390,9 +441,11 @@
 			.then(data => {
 				if (data.character) {
 					character = data.character;
+					lastKnownLevel = data.character.level;
 					if (data.worldTime) worldTime = data.worldTime;
 					if (data.dayNumber != null) dayNumber = data.dayNumber;
 					resetMessages();
+					captureSessionStart(data.character);
 					phase = 'play';
 					connectStream();
 				}
@@ -480,11 +533,13 @@
 
 			playerId = data.playerId;
 			character = data.character;
+			lastKnownLevel = data.character?.level ?? 1;
 
 			localStorage.setItem('infiltration_playerId', data.playerId);
 			localStorage.setItem('infiltration_playerName', playerName.trim());
 
 			resetMessages();
+			captureSessionStart(data.character);
 			phase = 'play';
 			connectStream(true);
 
@@ -569,6 +624,12 @@
 	}
 
 	function switchCharacter() {
+		// Show session summary before switching
+		showSessionSummary = true;
+	}
+
+	function confirmSwitchCharacter() {
+		showSessionSummary = false;
 		// Deactivate current character
 		if (playerId) {
 			fetch('/api/logout', {
@@ -615,11 +676,19 @@
 			if (data.worldTime) worldTime = data.worldTime;
 			if (data.dayNumber != null) dayNumber = data.dayNumber;
 			if (data.character) {
+				// Detect level-up via state poll
+				if (lastKnownLevel > 0 && data.character.level > lastKnownLevel) {
+					triggerLevelUp(data.character.level);
+				}
+				lastKnownLevel = data.character.level;
 				character = data.character;
 				// Detect death
 				if (!data.character.alive && phase === 'play') {
 					phase = 'dead';
 				}
+			}
+			if (data.quests) {
+				quests = Object.values(data.quests);
 			}
 		} catch {}
 	}
@@ -716,9 +785,11 @@
 				.then(data => {
 					if (data.character) {
 						character = data.character;
+						lastKnownLevel = data.character.level;
 						if (data.worldTime) worldTime = data.worldTime;
 						if (data.dayNumber != null) dayNumber = data.dayNumber;
 						resetMessages();
+						captureSessionStart(data.character);
 						phase = 'play';
 						connectStream();
 					} else {
@@ -1070,6 +1141,97 @@
 	</div>
 </div>
 
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- SESSION SUMMARY OVERLAY                                    -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+{#if showSessionSummary && character}
+<div class="session-overlay">
+	<div class="session-container">
+		<div class="session-icon">⏸</div>
+		<h1 class="session-title">SESSION SUMMARY</h1>
+		<div class="session-name">{character.name} the {character.class}</div>
+		<div class="session-subtitle">Level {character.level} · {character.hp}/{character.maxHp} HP · {character.location}</div>
+
+		<div class="session-stats">
+			<h2 class="stats-header">═══ THIS SESSION ═══</h2>
+			<div class="stats-grid">
+				<div class="stat-row">
+					<span class="stat-label">Session Duration</span>
+					<span class="stat-value">{(() => {
+						const ms = Date.now() - sessionStartTime;
+						const secs = Math.floor(ms / 1000);
+						if (secs < 60) return secs + 's';
+						const mins = Math.floor(secs / 60);
+						if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
+						const hrs = Math.floor(mins / 60);
+						return hrs + 'h ' + (mins % 60) + 'm';
+					})()}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">XP Earned</span>
+					<span class="stat-value session-delta">+{(character.xp ?? 0) - sessionStartXp}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Enemies Killed</span>
+					<span class="stat-value session-delta">+{(character.stats?.enemiesKilled ?? 0) - sessionStartKills}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Damage Dealt</span>
+					<span class="stat-value session-delta">+{(character.stats?.damageDealt ?? 0) - sessionStartDamageDealt}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Damage Taken</span>
+					<span class="stat-value session-delta">+{(character.stats?.damageTaken ?? 0) - sessionStartDamageTaken}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Items Found</span>
+					<span class="stat-value session-delta">+{(character.stats?.itemsFound ?? 0) - sessionStartItemsFound}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Actions Performed</span>
+					<span class="stat-value session-delta">+{(character.stats?.actionsPerformed ?? 0) - sessionStartActions}</span>
+				</div>
+			</div>
+		</div>
+
+		<div class="session-stats session-lifetime">
+			<h2 class="stats-header">═══ LIFETIME TOTALS ═══</h2>
+			<div class="stats-grid">
+				<div class="stat-row">
+					<span class="stat-label">Total XP</span>
+					<span class="stat-value">{character.xp}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Enemies Killed</span>
+					<span class="stat-value">{character.stats?.enemiesKilled ?? 0}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Damage Dealt</span>
+					<span class="stat-value">{character.stats?.damageDealt ?? 0}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Critical Hits</span>
+					<span class="stat-value">{character.stats?.criticalHits ?? 0}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Wealth</span>
+					<span class="stat-value">${character.wealth ?? 0}</span>
+				</div>
+			</div>
+		</div>
+
+		<button class="session-button" onclick={confirmSwitchCharacter}>
+			CONTINUE TO CHARACTER SELECT
+		</button>
+		<button class="session-cancel" onclick={() => { showSessionSummary = false; }}>
+			CANCEL
+		</button>
+	</div>
+</div>
+{/if}
+
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- DEATH SCREEN                                               -->
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -1185,7 +1347,16 @@
 				<div class="char-header">
 					<h2 class="char-name">{character.name}</h2>
 					<div class="char-class">{character.class} L{character.level}</div>
-					<div class="char-xp">XP: {character.xp}</div>
+					<!-- XP Progress Bar -->
+					<div class="xp-block">
+						<div class="xp-label">
+							XP <span class="xp-numbers">{character.xp} / {character.level * 1000}</span>
+							<span class="xp-next">Next: {character.level * 1000 - character.xp} XP</span>
+						</div>
+						<div class="xp-bar">
+							<div class="xp-fill" style="width: {Math.min(100, Math.max(0, ((character.xp - (character.level - 1) * 1000) / 1000) * 100))}%"></div>
+						</div>
+					</div>
 				</div>
 
 				<!-- Party Info -->
@@ -1272,6 +1443,38 @@
 					{/if}
 				</div>
 
+				<!-- Quest Journal -->
+				{#if quests.length > 0}
+					<div class="stat-block quest-block">
+						<button class="quest-toggle" onclick={() => questsOpen = !questsOpen}>
+							<h3 class="section-title" style="margin-bottom: 0;">QUESTS ({quests.filter(q => q.status === 'active').length})</h3>
+							<span class="quest-chevron">{questsOpen ? '▾' : '▸'}</span>
+						</button>
+						{#if questsOpen}
+							<div class="quest-list">
+								{#each quests as quest}
+									<div class="quest-item" class:quest-complete={quest.status === 'complete'} class:quest-failed={quest.status === 'failed'}>
+										<div class="quest-name">
+											{#if quest.status === 'complete'}✓{:else if quest.status === 'failed'}✗{:else}◆{/if}
+											{quest.name}
+										</div>
+										{#if quest.objectives && quest.objectives.length > 0}
+											<ul class="quest-objectives">
+												{#each quest.objectives as obj}
+													<li class:obj-complete={obj.complete}>
+														<span class="obj-marker">{obj.complete ? '☑' : '☐'}</span>
+														{obj.description}
+													</li>
+												{/each}
+											</ul>
+										{/if}
+									</div>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{/if}
+
 				<!-- Conditions -->
 				{#if character.conditions.length > 0}
 					<div class="stat-block">
@@ -1341,7 +1544,7 @@
 			{#if messages.length === 0}
 				<div class="empty-log">
 					<p>The terminal hums softly. A cursor blinks.</p>
-					<p class="hint">Type what you want to do. Look around. Talk to people. The world responds.</p>
+					<p class="hint-actions">Try: <span class="hint-cmd">"look around"</span> <span class="hint-sep">•</span> <span class="hint-cmd">"talk to Mac"</span> <span class="hint-sep">•</span> <span class="hint-cmd">"go to State Street"</span> <span class="hint-sep">•</span> type <span class="hint-cmd">/</span> for commands</p>
 				</div>
 			{/if}
 
@@ -1408,6 +1611,28 @@
 			</button>
 		</div>
 	</main>
+</div>
+{/if}
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- LEVEL UP CELEBRATION OVERLAY                               -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+{#if showLevelUp}
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="levelup-overlay" onclick={dismissLevelUp}>
+	<div class="levelup-particles">
+		{#each Array(20) as _, i}
+			<div class="levelup-particle" style="--i:{i};--x:{Math.random() * 100}vw;--delay:{Math.random() * 0.8}s;--dur:{1.5 + Math.random() * 2}s"></div>
+		{/each}
+	</div>
+	<div class="levelup-content">
+		<div class="levelup-flash"></div>
+		<div class="levelup-label">LEVEL UP</div>
+		<div class="levelup-number">{levelUpNumber}</div>
+		<div class="levelup-subtitle">Click to dismiss</div>
+	</div>
 </div>
 {/if}
 
@@ -1534,6 +1759,123 @@
 	.death-button:hover {
 		background: #cc0000;
 		color: #0a0a0a;
+	}
+
+
+	/* ═══════════════════════════════════════════════════════ */
+	/* SESSION SUMMARY                                        */
+	/* ═══════════════════════════════════════════════════════ */
+
+	.session-overlay {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background: rgba(0, 0, 0, 0.92);
+		z-index: 1000;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 2rem;
+		overflow-y: auto;
+		animation: session-fade-in 0.3s ease-out;
+	}
+
+	@keyframes session-fade-in {
+		from { opacity: 0; }
+		to { opacity: 1; }
+	}
+
+	.session-container {
+		max-width: 500px;
+		width: 100%;
+		text-align: center;
+		padding-bottom: 2rem;
+	}
+
+	.session-icon {
+		font-size: 3rem;
+		margin-bottom: 0.5rem;
+		opacity: 0.8;
+	}
+
+	.session-title {
+		font-family: 'Courier New', monospace;
+		font-size: 2rem;
+		color: var(--amber);
+		text-shadow: 0 0 20px rgba(255, 191, 0, 0.3);
+		margin-bottom: 0.5rem;
+		letter-spacing: 0.2em;
+	}
+
+	.session-name {
+		color: var(--green);
+		font-family: 'Courier New', monospace;
+		font-size: 1.2rem;
+		margin-bottom: 0.25rem;
+	}
+
+	.session-subtitle {
+		color: #666;
+		font-family: 'Courier New', monospace;
+		font-size: 0.85rem;
+		margin-bottom: 2rem;
+	}
+
+	.session-stats {
+		background: rgba(255, 191, 0, 0.03);
+		border: 1px solid #332b11;
+		padding: 1.5rem;
+		margin-bottom: 1rem;
+		text-align: left;
+	}
+
+	.session-lifetime {
+		background: rgba(0, 255, 0, 0.02);
+		border-color: #1a331a;
+		margin-bottom: 2rem;
+	}
+
+	.session-delta {
+		color: var(--green) !important;
+	}
+
+	.session-button {
+		background: transparent;
+		border: 1px solid var(--amber);
+		color: var(--amber);
+		padding: 0.8rem 2rem;
+		font-family: 'Courier New', monospace;
+		font-size: 1rem;
+		cursor: pointer;
+		letter-spacing: 0.1em;
+		transition: all 0.2s;
+		width: 100%;
+		margin-bottom: 0.5rem;
+	}
+
+	.session-button:hover {
+		background: var(--amber);
+		color: #0a0a0a;
+	}
+
+	.session-cancel {
+		background: transparent;
+		border: 1px solid #444;
+		color: #666;
+		padding: 0.6rem 2rem;
+		font-family: 'Courier New', monospace;
+		font-size: 0.85rem;
+		cursor: pointer;
+		letter-spacing: 0.1em;
+		transition: all 0.2s;
+		width: 100%;
+	}
+
+	.session-cancel:hover {
+		border-color: #888;
+		color: #aaa;
 	}
 
 	/* ═══════════════════════════════════════════════════════ */
@@ -2516,10 +2858,20 @@
 		color: var(--green-dim);
 	}
 
-	.empty-log .hint {
+	.empty-log .hint-actions {
 		margin-top: 0.5rem;
 		color: var(--gray);
 		font-size: 0.85rem;
+	}
+
+	.hint-cmd {
+		color: var(--green);
+		font-family: inherit;
+	}
+
+	.hint-sep {
+		color: var(--gray-dark);
+		margin: 0 0.25rem;
 	}
 
 	.log-entry {
@@ -2866,5 +3218,286 @@
 	@keyframes romance-pulse {
 		0%, 100% { opacity: 1; }
 		50% { opacity: 0.4; }
+	}
+
+	/* ── XP Progress Bar ───────────────────────────── */
+
+	.xp-block {
+		margin-top: 0.35rem;
+	}
+
+	.xp-label {
+		font-size: 0.75rem;
+		color: var(--green-dim);
+		margin-bottom: 0.25rem;
+		display: flex;
+		justify-content: space-between;
+	}
+
+	.xp-numbers {
+		color: #a78bfa;
+	}
+
+	.xp-next {
+		font-size: 0.65rem;
+		color: var(--gray);
+	}
+
+	.xp-bar {
+		height: 6px;
+		background: var(--bg-input);
+		border-radius: 3px;
+		overflow: hidden;
+		border: 1px solid rgba(167, 139, 250, 0.25);
+	}
+
+	.xp-fill {
+		height: 100%;
+		background: linear-gradient(90deg, #7c3aed, #a78bfa);
+		transition: width 0.5s;
+		border-radius: 2px;
+	}
+
+	/* ── Quest Journal ─────────────────────────────── */
+
+	.quest-block {
+		/* inherits stat-block */
+	}
+
+	.quest-toggle {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		width: 100%;
+		background: none;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		color: inherit;
+		font: inherit;
+	}
+
+	.quest-chevron {
+		font-size: 0.75rem;
+		color: var(--green-dim);
+	}
+
+	.quest-list {
+		margin-top: 0.5rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.quest-item {
+		padding: 0.35rem 0;
+		border-left: 2px solid #a78bfa;
+		padding-left: 0.5rem;
+	}
+
+	.quest-item.quest-complete {
+		border-left-color: var(--green);
+		opacity: 0.6;
+	}
+
+	.quest-item.quest-failed {
+		border-left-color: var(--red);
+		opacity: 0.5;
+	}
+
+	.quest-name {
+		font-size: 0.8rem;
+		color: var(--green);
+		font-weight: 500;
+	}
+
+	.quest-complete .quest-name {
+		color: var(--gray);
+		text-decoration: line-through;
+	}
+
+	.quest-failed .quest-name {
+		color: var(--red);
+	}
+
+	.quest-objectives {
+		list-style: none;
+		margin: 0.25rem 0 0 0;
+		padding: 0;
+	}
+
+	.quest-objectives li {
+		font-size: 0.7rem;
+		color: var(--gray);
+		padding: 0.1rem 0;
+	}
+
+	.quest-objectives li.obj-complete {
+		color: var(--green-dim);
+	}
+
+	.obj-marker {
+		margin-right: 0.25rem;
+		font-size: 0.65rem;
+	}
+
+	/* ═══════════════════════════════════════════════════════ */
+	/* LEVEL UP CELEBRATION                                   */
+	/* ═══════════════════════════════════════════════════════ */
+
+	.levelup-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 9999;
+		background: radial-gradient(ellipse at center, rgba(30, 20, 0, 0.92) 0%, rgba(0, 0, 0, 0.96) 100%);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		animation: levelup-fade-in 0.3s ease-out;
+		cursor: pointer;
+		overflow: hidden;
+	}
+
+	@keyframes levelup-fade-in {
+		from { opacity: 0; }
+		to { opacity: 1; }
+	}
+
+	.levelup-content {
+		position: relative;
+		text-align: center;
+		z-index: 2;
+	}
+
+	.levelup-flash {
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		width: 600px;
+		height: 600px;
+		margin: -300px 0 0 -300px;
+		border-radius: 50%;
+		background: radial-gradient(circle, rgba(255, 200, 50, 0.3) 0%, transparent 70%);
+		animation: levelup-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes levelup-pulse {
+		0%, 100% { transform: scale(0.8); opacity: 0.4; }
+		50% { transform: scale(1.2); opacity: 0.8; }
+	}
+
+	.levelup-label {
+		position: relative;
+		font-family: 'JetBrains Mono', monospace;
+		font-size: 4rem;
+		font-weight: 900;
+		letter-spacing: 0.3em;
+		color: #ffd700;
+		text-shadow:
+			0 0 20px rgba(255, 215, 0, 0.8),
+			0 0 40px rgba(255, 180, 0, 0.6),
+			0 0 80px rgba(255, 150, 0, 0.4),
+			0 0 120px rgba(255, 100, 0, 0.2);
+		animation: levelup-text-glow 1.5s ease-in-out infinite alternate, levelup-text-enter 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+	}
+
+	@keyframes levelup-text-enter {
+		from { transform: scale(0.3) translateY(30px); opacity: 0; }
+		to { transform: scale(1) translateY(0); opacity: 1; }
+	}
+
+	@keyframes levelup-text-glow {
+		from {
+			text-shadow:
+				0 0 20px rgba(255, 215, 0, 0.8),
+				0 0 40px rgba(255, 180, 0, 0.6),
+				0 0 80px rgba(255, 150, 0, 0.4);
+		}
+		to {
+			text-shadow:
+				0 0 30px rgba(255, 215, 0, 1),
+				0 0 60px rgba(255, 180, 0, 0.8),
+				0 0 100px rgba(255, 150, 0, 0.6),
+				0 0 140px rgba(255, 100, 0, 0.3);
+		}
+	}
+
+	.levelup-number {
+		position: relative;
+		font-family: 'JetBrains Mono', monospace;
+		font-size: 8rem;
+		font-weight: 900;
+		color: #fff;
+		text-shadow:
+			0 0 30px rgba(255, 215, 0, 0.9),
+			0 0 60px rgba(255, 180, 0, 0.7);
+		animation: levelup-number-enter 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both;
+		line-height: 1;
+		margin-top: -0.5rem;
+	}
+
+	@keyframes levelup-number-enter {
+		from { transform: scale(3); opacity: 0; filter: blur(10px); }
+		to { transform: scale(1); opacity: 1; filter: blur(0); }
+	}
+
+	.levelup-subtitle {
+		position: relative;
+		font-family: 'JetBrains Mono', monospace;
+		font-size: 0.8rem;
+		color: rgba(255, 215, 0, 0.5);
+		letter-spacing: 0.2em;
+		margin-top: 2rem;
+		animation: levelup-fade-in 1s ease-out 1s both;
+	}
+
+	/* Particles */
+	.levelup-particles {
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		pointer-events: none;
+		overflow: hidden;
+	}
+
+	.levelup-particle {
+		position: absolute;
+		bottom: -10px;
+		left: var(--x);
+		width: 4px;
+		height: 4px;
+		background: #ffd700;
+		border-radius: 50%;
+		box-shadow: 0 0 6px 2px rgba(255, 215, 0, 0.6);
+		animation: levelup-particle-rise var(--dur) ease-out var(--delay) infinite;
+	}
+
+	.levelup-particle:nth-child(odd) {
+		background: #ffaa00;
+		width: 3px;
+		height: 3px;
+		box-shadow: 0 0 4px 1px rgba(255, 170, 0, 0.5);
+	}
+
+	.levelup-particle:nth-child(3n) {
+		background: #fff;
+		width: 2px;
+		height: 2px;
+		box-shadow: 0 0 8px 3px rgba(255, 255, 255, 0.4);
+	}
+
+	@keyframes levelup-particle-rise {
+		0% {
+			transform: translateY(0) translateX(0) scale(0);
+			opacity: 0;
+		}
+		10% {
+			opacity: 1;
+			transform: translateY(-10vh) translateX(0) scale(1);
+		}
+		100% {
+			transform: translateY(-110vh) translateX(calc((var(--i) - 10) * 5px)) scale(0.3);
+			opacity: 0;
+		}
 	}
 </style>

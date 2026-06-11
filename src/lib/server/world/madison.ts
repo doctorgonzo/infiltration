@@ -705,26 +705,253 @@ export function createInitialWorld(): GameState {
 
 const ENCOUNTER_TABLES: Record<string, EncounterEntry[]> = {
 	outdoor: [
+		// ── Combat ──
 		{ name: 'Infiltrator Patrol', type: 'combat', description: 'Two figures in matching business casual walk toward you in perfect lockstep. Their heads turn to track you simultaneously.', enemies: [{name: 'Infiltrator Scout', hp: 18, ac: 13, attackBonus: 3, damage: '1d6+2', xpValue: 100}], minDay: 2, weight: 3 },
-		{ name: 'Suspicious Stranger', type: 'social', description: 'Someone flags you down urgently. They look scared — or they\'re pretending to be.', weight: 4 },
+		{ name: 'Conversion Team', type: 'combat', description: 'A white van with tinted windows pulls up. Three infiltrators in "Community Wellness" polo shirts step out, smiling identically.', enemies: [{name: 'Wellness Agent', hp: 20, ac: 14, attackBonus: 4, damage: '1d6+3', xpValue: 120}, {name: 'Wellness Agent', hp: 20, ac: 14, attackBonus: 4, damage: '1d6+3', xpValue: 120}], minDay: 4, weight: 2 },
+		// ── Social ──
+		{ name: 'Suspicious Stranger', type: 'social', description: 'Someone flags you down urgently. They look scared — or they\'re pretending to be.', weight: 3 },
 		{ name: 'Police Checkpoint', type: 'social', description: 'A squad car blocks the road ahead. Officer approaches.', minDay: 3, weight: 2 },
+		{ name: 'Panicked Survivor', type: 'social', description: 'A woman crouching behind a mailbox waves you down. "Hey — hey! You\'re real, right? Please tell me you\'re real."', weight: 2 },
+		{ name: 'Resistance Graffiti', type: 'social', description: 'Fresh spray paint on a wall: "THEY DON\'T BLINK." Someone left a burner phone taped underneath.', weight: 2 },
+		{ name: 'Neighborhood Watch', type: 'social', description: 'An older man on his porch waves you over. "You\'re that one who\'s been asking questions. Good. I got something to show you."', weight: 2 },
+		// ── Loot ──
 		{ name: 'Supply Cache', type: 'loot', description: 'You spot a backpack wedged behind a dumpster. Someone stashed supplies here.', weight: 2 },
-		{ name: 'Nothing', type: 'none', description: '', weight: 8 }
+		{ name: 'Abandoned Car', type: 'loot', description: 'A car with both doors open, engine still running. The driver\'s personal effects are scattered across the passenger seat.', weight: 2 },
+		// ── Atmosphere ──
+		{ name: 'Synchronized Joggers', type: 'atmosphere', description: 'A group of joggers passes in perfect formation — same pace, same breathing, same blank expression. One turns its head 180 degrees to watch you as it passes.', weight: 2 },
+		{ name: 'Flickering Streetlights', type: 'atmosphere', description: 'Every streetlight on the block flickers in sequence, like a signal. Then darkness for exactly three seconds. Then normal again.', weight: 2 },
+		{ name: 'Missing Poster', type: 'atmosphere', description: 'A telephone pole is covered in missing person flyers. At least fifteen different faces. The dates are all from the last two weeks.', weight: 2 },
+		// ── Nothing ──
+		{ name: 'Nothing', type: 'none', description: '', weight: 5 }
 	],
 	indoor: [
+		// ── Skill ──
 		{ name: 'Locked Door', type: 'skill', description: 'A door you haven\'t tried before. The lock looks pickable.', weight: 3 },
-		{ name: 'Nothing', type: 'none', description: '', weight: 7 }
-	],
-	dungeon: [
-		{ name: 'Drone Patrol', type: 'combat', description: 'A floating orb rounds the corner, red lens sweeping.', enemies: [{name: 'Patrol Drone', hp: 12, ac: 15, attackBonus: 4, damage: '1d8', xpValue: 80}], weight: 5 },
-		{ name: 'Trap', type: 'skill', description: 'You hear a faint click under your foot.', weight: 3 },
+		{ name: 'Security Camera', type: 'skill', description: 'A security camera tracks you with inhuman smoothness. Its red light blinks in a pattern that doesn\'t look like standard firmware.', weight: 2 },
+		// ── Social ──
+		{ name: 'Hiding Civilian', type: 'social', description: 'A muffled whimper from behind a storage rack. Someone\'s been hiding here for a while — there are empty water bottles and candy wrappers.', weight: 2 },
+		{ name: 'Overheard Conversation', type: 'social', description: 'Voices from the next room — two people arguing. One sounds scared. The other sounds... patient. Too patient.', weight: 3 },
+		// ── Loot ──
+		{ name: 'Break Room Stash', type: 'loot', description: 'An employee break room. Someone\'s locker is cracked open, revealing personal belongings — and something useful.', weight: 2 },
+		// ── Atmosphere ──
+		{ name: 'Humming Walls', type: 'atmosphere', description: 'The walls vibrate at a frequency you feel in your teeth. It stops when you touch the wall. Starts again when you pull away.', weight: 2 },
+		// ── Nothing ──
 		{ name: 'Nothing', type: 'none', description: '', weight: 4 }
 	],
+	dungeon: [
+		// ── Combat ──
+		{ name: 'Drone Patrol', type: 'combat', description: 'A floating orb rounds the corner, red lens sweeping.', enemies: [{name: 'Patrol Drone', hp: 12, ac: 15, attackBonus: 4, damage: '1d8', xpValue: 80}], weight: 4 },
+		{ name: 'Ambush', type: 'combat', description: 'The ceiling panels burst open. Something drops behind you.', enemies: [{name: 'Ceiling Stalker', hp: 16, ac: 14, attackBonus: 4, damage: '1d8+2', xpValue: 100}], weight: 3 },
+		// ── Skill ──
+		{ name: 'Trap', type: 'skill', description: 'You hear a faint click under your foot.', weight: 3 },
+		{ name: 'Sealed Door', type: 'skill', description: 'A heavy blast door with a keypad. The display reads "ENTER AUTHORIZATION." But there are scratch marks around the edges — someone tried to force it.', weight: 2 },
+		// ── Loot ──
+		{ name: 'Fallen Explorer', type: 'loot', description: 'A body slumped against the wall. Been here a while. Their gear is still intact.', weight: 2 },
+		{ name: 'Supply Room', type: 'loot', description: 'A storage alcove stacked with crates. Most are empty. One isn\'t.', weight: 2 },
+		// ── Atmosphere ──
+		{ name: 'The Hum', type: 'atmosphere', description: 'The ever-present mechanical hum suddenly changes pitch. Like something woke up. Then it settles back. But not quite to the same note.', weight: 2 },
+		// ── Nothing ──
+		{ name: 'Nothing', type: 'none', description: '', weight: 2 }
+	],
 	underground: [
+		// ── Combat ──
 		{ name: 'Tunnel Crawler', type: 'combat', description: 'Something skitters in the darkness ahead. Multiple legs.', enemies: [{name: 'Tunnel Crawler', hp: 18, ac: 13, attackBonus: 3, damage: '1d8+2', xpValue: 120}], weight: 4 },
-		{ name: 'Echoes', type: 'atmosphere', description: 'Strange sounds echo through the tunnels — almost like voices, but wrong.', weight: 4 },
-		{ name: 'Nothing', type: 'none', description: '', weight: 5 }
+		{ name: 'Swarm', type: 'combat', description: 'The tunnel fills with a clicking, buzzing mass — dozens of fist-sized drones moving as one organism.', enemies: [{name: 'Micro-Drone Swarm', hp: 25, ac: 12, attackBonus: 5, damage: '2d4', xpValue: 150}], minDay: 3, weight: 2 },
+		// ── Social ──
+		{ name: 'Lost Student', type: 'social', description: 'A grad student with a headlamp and a terrified expression. "Oh thank god. I\'ve been down here for hours. I can\'t find the way out and something keeps following me."', weight: 2 },
+		// ── Skill ──
+		{ name: 'Unstable Floor', type: 'skill', description: 'The floor ahead is cracked and sagging. You can hear water rushing underneath. One wrong step and you\'re going through.', weight: 2 },
+		// ── Loot ──
+		{ name: 'Maintenance Locker', type: 'loot', description: 'A rusted maintenance locker, door hanging open. Campus utilities left tools and supplies here decades ago.', weight: 2 },
+		// ── Atmosphere ──
+		{ name: 'Echoes', type: 'atmosphere', description: 'Strange sounds echo through the tunnels — almost like voices, but wrong.', weight: 3 },
+		{ name: 'Signal Bleed', type: 'atmosphere', description: 'Your phone lights up with a notification — but you have no signal. The screen fills with coordinates and then goes dark.', weight: 2 },
+		// ── Nothing ──
+		{ name: 'Nothing', type: 'none', description: '', weight: 3 }
 	]
 };
 
-export { ITEMS, ENCOUNTER_TABLES };
+// ── Time-of-Day Encounter Modifiers ─────────────────────────
+// Night encounters and drunk encounters are added dynamically
+export const NIGHT_ENCOUNTERS: EncounterEntry[] = [
+	{ name: 'Night Patrol', type: 'combat', description: 'In the darkness, you see them — a squad of infiltrators moving in perfect formation, their eyes reflecting light like animals. They patrol at night when fewer humans notice the coordination.', enemies: [{name: 'Night Infiltrator', hp: 22, ac: 14, attackBonus: 4, damage: '1d8+2', xpValue: 130}], minDay: 2, weight: 3 },
+	{ name: 'Scavenger', type: 'social', description: 'A figure rifling through garbage cans looks up, startled. Not an infiltrator — just someone who learned that nighttime is safer for collecting supplies. They know shortcuts.', weight: 3 },
+	{ name: 'Midnight Signal', type: 'atmosphere', description: 'Every screen on the block — phones, laptops, TVs in dark apartments — flickers to life simultaneously. A tone plays for exactly three seconds. Then everything goes dark again. Nobody in the apartments stirs.', weight: 3 },
+	{ name: 'The Replaced', type: 'atmosphere', description: 'Through a lit window, you see a family eating dinner in complete silence. No one is chewing. The food sits untouched. They\'re all smiling.', minDay: 2, weight: 2 },
+];
+
+export const DRUNK_ENCOUNTERS: EncounterEntry[] = [
+	{ name: 'Bar Fight', type: 'combat', description: 'Your drunken stumbling bumps into someone who does NOT appreciate it. Wait — that\'s not a normal overreaction. Their eyes flash metallic for a second before they swing.', enemies: [{name: 'Angry Infiltrator', hp: 20, ac: 13, attackBonus: 3, damage: '1d6+3', xpValue: 110}], weight: 3 },
+	{ name: 'Drunk Discovery', type: 'social', description: 'Your inebriated path takes you down an alley you\'d normally skip. There\'s a door here you\'ve never noticed — and it\'s ajar. Sometimes the drunk route is the best route.', weight: 4 },
+	{ name: 'Liquid Courage Confession', type: 'social', description: 'You stumble into someone who\'s also plastered. They grab your arm. "Listen... LISTEN. My neighbor? She died three months ago. I went to the funeral. But she\'s BACK. She came back and she doesn\'t remember dying. HOW DO YOU NOT REMEMBER DYING?"', weight: 3 },
+	{ name: 'Drunk Dial', type: 'atmosphere', description: 'You accidentally butt-dial someone. The phone connects to a number you didn\'t call. A synthesized voice says your full name and current location, then hangs up.', weight: 2 },
+	{ name: 'The Shortcut', type: 'skill', description: 'Your alcohol-impaired brain insists there\'s a shortcut through this fence. Your alcohol-impaired body is going to try it. (Balance check, -2 inebriation penalty)', weight: 3 },
+];
+
+// ── Loot Tables ─────────────────────────────────────────────
+// Easily editable: each enemy type has a weighted drop table.
+// 'nothing' entries control how often enemies drop nothing at all.
+// The Director rolls on this table after a kill and calls give_item.
+
+export interface LootDrop {
+	itemId: string;         // key into ITEMS, or 'nothing'
+	weight: number;         // relative probability
+	minDay?: number;        // only drops after this day
+}
+
+const LOOT_TABLES: Record<string, LootDrop[]> = {
+	// ── By enemy type ──
+	drone: [
+		{ itemId: 'nothing', weight: 3 },
+		{ itemId: 'cell_phone', weight: 1 },
+		{ itemId: 'flashlight', weight: 2 },
+		{ itemId: 'pocket_knife', weight: 2 },
+		{ itemId: 'first_aid_kit', weight: 1 },
+		{ itemId: 'scrap_metal', weight: 3 },
+		{ itemId: 'capacitor_coil', weight: 2 },
+	],
+	infiltrator: [
+		{ itemId: 'nothing', weight: 2 },
+		{ itemId: 'pocket_knife', weight: 2 },
+		{ itemId: 'cell_phone', weight: 2 },
+		{ itemId: 'spotted_cow', weight: 1 },
+		{ itemId: 'cheese_curds', weight: 1 },
+		{ itemId: 'synth_skin_patch', weight: 2 },
+		{ itemId: 'nutrisynth_sample', weight: 1, minDay: 2 },
+		{ itemId: 'pistol_9mm', weight: 1, minDay: 3 },
+	],
+	construct: [
+		{ itemId: 'nothing', weight: 2 },
+		{ itemId: 'scrap_metal', weight: 4 },
+		{ itemId: 'capacitor_coil', weight: 3 },
+		{ itemId: 'first_aid_kit', weight: 1 },
+		{ itemId: 'emp_grenade', weight: 1, minDay: 3 },
+	],
+	swarm: [
+		{ itemId: 'nothing', weight: 4 },
+		{ itemId: 'scrap_metal', weight: 3 },
+		{ itemId: 'capacitor_coil', weight: 2 },
+	],
+	boss: [
+		// Bosses always drop something — their loot[] array is primary,
+		// this table is for BONUS drops on top of that
+		{ itemId: 'first_aid_kit', weight: 3 },
+		{ itemId: 'emp_grenade', weight: 2 },
+		{ itemId: 'herbal_poultice', weight: 1 },
+	],
+	// ── Generic fallback ──
+	generic: [
+		{ itemId: 'nothing', weight: 4 },
+		{ itemId: 'pocket_knife', weight: 2 },
+		{ itemId: 'first_aid_kit', weight: 1 },
+		{ itemId: 'cheese_curds', weight: 1 },
+		{ itemId: 'scrap_metal', weight: 2 },
+	],
+};
+
+// ── New loot-only items ─────────────────────────────────────
+// These are crafting/junk items that drop from enemies
+const LOOT_ITEMS: Record<string, Item> = {
+	scrap_metal: {
+		id: 'scrap_metal', name: 'Scrap Metal', type: 'junk',
+		description: 'Twisted fragments of alien alloy. Lighter than steel, warmer than it should be. Someone crafty could make something out of this.',
+		weight: 1, value: 5
+	},
+	capacitor_coil: {
+		id: 'capacitor_coil', name: 'Capacitor Coil', type: 'junk',
+		description: 'A crystalline coil that still hums with residual charge. Pulled from infiltrator circuitry. The engineering students would kill for one of these.',
+		weight: 0.5, value: 15
+	},
+	synth_skin_patch: {
+		id: 'synth_skin_patch', name: 'Synth Skin Patch', type: 'junk',
+		description: 'A palm-sized piece of synthetic skin, disturbingly warm and realistic. Could be used as a disguise component or sold to the paranoid.',
+		weight: 0.2, value: 20
+	},
+};
+
+// Merge loot items into ITEMS so give_item can find them
+Object.assign(ITEMS, LOOT_ITEMS);
+
+// Helper: roll on a loot table for a given enemy type
+export function rollLootDrop(enemyType: string, dayNumber: number): string | null {
+	const table = LOOT_TABLES[enemyType] ?? LOOT_TABLES.generic;
+	const eligible = table.filter(d => !d.minDay || dayNumber >= d.minDay);
+	if (eligible.length === 0) return null;
+
+	const totalWeight = eligible.reduce((sum, d) => sum + d.weight, 0);
+	let roll = Math.random() * totalWeight;
+	for (const drop of eligible) {
+		roll -= drop.weight;
+		if (roll <= 0) return drop.itemId === 'nothing' ? null : drop.itemId;
+	}
+	return null;
+}
+
+// ── NPC Connections ─────────────────────────────────────────
+// NPCs know about each other. The Director uses this to make
+// conversations feel like a living community, not isolated quest dispensers.
+export const NPC_CONNECTIONS: Record<string, Array<{ npcId: string; relationship: string }>> = {
+	mac_the_bartender: [
+		{ npcId: 'jenny_wu', relationship: 'ally — lets her use the back room for her investigation board' },
+		{ npcId: 'iron_mike', relationship: 'old friend — two doors down at Mickey\'s, sends people to train with him' },
+		{ npcId: 'dee_fontaine', relationship: 'regular — she performs at the Majestic, drinks at the Rigby after shows' },
+		{ npcId: 'bartender_sal', relationship: 'rival bar owner on King Street — respects him but they argue about whiskey' },
+		{ npcId: 'sage_okonkwo', relationship: 'supplier — she brings herbs for his cocktails, he trusts her judgment' },
+		{ npcId: 'officer_chen', relationship: 'informant — she comes in off-duty, they share intel quietly' },
+	],
+	jenny_wu: [
+		{ npcId: 'mac_the_bartender', relationship: 'host — he gave her the back room for free, no questions' },
+		{ npcId: 'officer_chen', relationship: 'source — Chen leaks missing persons data to her off the record' },
+		{ npcId: 'professor_vasquez', relationship: 'contact — Vasquez provides scientific backing for her theories' },
+		{ npcId: 'spotter_ray', relationship: 'intel partner — Ray feeds her patrol data, she connects the dots' },
+	],
+	officer_chen: [
+		{ npcId: 'jenny_wu', relationship: 'off-record source — feeds her case info the department won\'t pursue' },
+		{ npcId: 'mac_the_bartender', relationship: 'trusted civilian — drinks at the Rigby, knows Mac is solid' },
+		{ npcId: 'hot_dog_vendor', relationship: 'eyes on the Square — Frank sees everything, she checks in daily' },
+	],
+	hot_dog_vendor: [
+		{ npcId: 'officer_chen', relationship: 'regular customer — she buys a dog every shift, they talk' },
+		{ npcId: 'barista_maya', relationship: 'neighbor vendor — something\'s off about her lately' },
+	],
+	barista_maya: [
+		{ npcId: 'hot_dog_vendor', relationship: 'nearby vendor — Frank watches her too closely' },
+		{ npcId: 'student_alex', relationship: 'regular customer — Alex orders the same thing every day' },
+	],
+	professor_vasquez: [
+		{ npcId: 'jenny_wu', relationship: 'collaborator — Jenny publishes what Elena can\'t say officially' },
+		{ npcId: 'student_alex', relationship: 'former student — Alex took her quantum physics seminar' },
+		{ npcId: 'professor_chen_ghost', relationship: 'colleague — Wei Chen was her research partner before he vanished' },
+	],
+	student_alex: [
+		{ npcId: 'professor_vasquez', relationship: 'former professor — they trust her theories about the signal' },
+		{ npcId: 'barista_maya', relationship: 'gets coffee from her daily — hasn\'t noticed she\'s off yet' },
+	],
+	bartender_sal: [
+		{ npcId: 'mac_the_bartender', relationship: 'rival — Mac\'s dive vs Sal\'s cocktail bar, grudging respect' },
+		{ npcId: 'dee_fontaine', relationship: 'neighbor — the Majestic is right there, Dee used to drink at his place' },
+		{ npcId: 'iron_mike', relationship: 'drinking buddy — Mike\'s a regular after closing time' },
+	],
+	dee_fontaine: [
+		{ npcId: 'mac_the_bartender', relationship: 'drinking buddy — always ends up at the Rigby after a show' },
+		{ npcId: 'bartender_sal', relationship: 'neighbor — Sal\'s bar is walking distance from the Majestic' },
+		{ npcId: 'iron_mike', relationship: 'sparring partner — verbal, not physical. They trade insults like love letters' },
+	],
+	iron_mike: [
+		{ npcId: 'mac_the_bartender', relationship: 'old friend — two bars, same block, same fight' },
+		{ npcId: 'dee_fontaine', relationship: 'verbal sparring partner — she\'s the only person who out-insults him' },
+		{ npcId: 'spotter_ray', relationship: 'respects the military background — Ray helped plan the training schedule' },
+		{ npcId: 'bartender_sal', relationship: 'late-night regular at Sal\'s after Mickey\'s closes' },
+	],
+	sage_okonkwo: [
+		{ npcId: 'mac_the_bartender', relationship: 'herb supplier for his cocktails — they trade favors' },
+		{ npcId: 'professor_vasquez', relationship: 'science allies — Sage does chemistry, Elena does physics, they compare notes on NutriSynth' },
+	],
+	spotter_ray: [
+		{ npcId: 'jenny_wu', relationship: 'intel partner — she processes his raw surveillance into patterns' },
+		{ npcId: 'iron_mike', relationship: 'tactical advisor — helps plan the resistance training ops' },
+		{ npcId: 'officer_chen', relationship: 'mutual respect — both ex-military mentality, different branches' },
+	],
+};
+
+export { ITEMS, ENCOUNTER_TABLES, LOOT_TABLES };

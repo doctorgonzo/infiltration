@@ -8,7 +8,7 @@
 
 import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive, createParty, getPlayerParty, inviteToParty, joinParty, leaveParty, disbandParty, getPartyMembers, findPendingInvite, getCharacter } from './state';
 import * as dice from './dice';
-import { ITEMS, ENCOUNTER_TABLES } from '$lib/server/world/madison';
+import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC } from '$lib/types';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
@@ -304,8 +304,31 @@ function countInfiltrators(state: GameState): number {
 	return Object.values(state.npcs).filter(n => n.isInfiltrator && n.alive).length;
 }
 
+// ── Time-of-Day Helper ─────────────────────────────────────
+function isNightTime(state: GameState): boolean {
+	const m = state.worldTime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+	if (!m) return false;
+	let h = parseInt(m[1]);
+	const ampm = m[3].toUpperCase();
+	if (ampm === 'AM' && h === 12) h = 0;
+	else if (ampm === 'PM' && h !== 12) h += 12;
+	return h >= 21 || h < 5; // 9 PM to 5 AM
+}
+
+function isDawnOrDusk(state: GameState): 'dawn' | 'dusk' | null {
+	const m = state.worldTime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+	if (!m) return null;
+	let h = parseInt(m[1]);
+	const ampm = m[3].toUpperCase();
+	if (ampm === 'AM' && h === 12) h = 0;
+	else if (ampm === 'PM' && h !== 12) h += 12;
+	if (h >= 5 && h < 7) return 'dawn';
+	if (h >= 18 && h < 20) return 'dusk';
+	return null;
+}
+
 // ── Random Encounter Check ──────────────────────────────────
-function checkForEncounter(state: GameState, locationType: string, dangerLevel: number): EncounterEntry | null {
+function checkForEncounter(state: GameState, locationType: string, dangerLevel: number, playerInebriation?: number): EncounterEntry | null {
 	const table = ENCOUNTER_TABLES[locationType];
 	if (!table || table.length === 0) return null;
 
@@ -316,8 +339,21 @@ function checkForEncounter(state: GameState, locationType: string, dangerLevel: 
 	const encounterChance = dangerLevel * 0.1;
 	if (Math.random() > encounterChance) return null;
 
+	// Build encounter pool: base table + time-of-day + drunk modifiers
+	let pool = [...table];
+
+	// Night encounters: outdoor/indoor areas get extra night-only encounters
+	if (isNightTime(state) && (locationType === 'outdoor' || locationType === 'indoor')) {
+		pool.push(...NIGHT_ENCOUNTERS);
+	}
+
+	// Drunk encounters: if player inebriation >= 4, add drunk-only encounters
+	if ((playerInebriation ?? 0) >= 4 && (locationType === 'outdoor' || locationType === 'indoor')) {
+		pool.push(...DRUNK_ENCOUNTERS);
+	}
+
 	// Filter entries by minDay requirement
-	let eligible = table.filter(entry => {
+	let eligible = pool.filter(entry => {
 		if (entry.minDay && state.dayNumber < entry.minDay) return false;
 		return true;
 	});
@@ -803,9 +839,39 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 							addLogEntry({
 								timestamp: new Date().toISOString(),
 								type: 'system',
-								text: `⚡ ${atkPlayer.name} reached LEVEL ${newLevel}! +${hpGain} HP (${atkPlayer.hp}/${atkPlayer.maxHp})`
+								text: `🔥 LEVEL UP! 🔥 ${atkPlayer.name} has reached Level ${newLevel}! +${hpGain} HP (${atkPlayer.hp}/${atkPlayer.maxHp})`
 							});
 						}
+					}
+
+					// ── Loot drop ──
+					const enemyType: string = (target as any).type ?? 'generic';
+					const existingLoot: string[] = (target as any).loot ?? [];
+					const isBoss = enemyType === 'boss' || (target as any).xpValue >= 250;
+					const lootDropId = rollLootDrop(enemyType, state.dayNumber);
+					const allDrops = [...existingLoot];
+					if (lootDropId && !allDrops.includes(lootDropId)) allDrops.push(lootDropId);
+
+					if (allDrops.length > 0) {
+						const dropNames = allDrops.map(id => ITEMS[id]?.name ?? id).join(', ');
+						addLogEntry({
+							timestamp: new Date().toISOString(),
+							type: 'system',
+							targetPlayer: input.attacker_id,
+							text: `💀 ${(target as any).name} dropped: ${dropNames}. Type "loot" or "pick up" to grab it.`
+						});
+					}
+
+					// Global broadcast for boss kills
+					if (isBoss) {
+						const bossName = (target as any).name;
+						const locName = state.locations[atkPlayer.location]?.name ?? 'somewhere in Madison';
+						addLogEntry({
+							timestamp: new Date().toISOString(),
+							type: 'system',
+							text: `\n═══════════════════════════════════════\n⚔️  ${bossName.toUpperCase()} HAS BEEN DEFEATED  ⚔️\n${atkPlayer.name} struck the final blow at ${locName}.\nThe resistance grows stronger.\n═══════════════════════════════════════`
+						});
+						console.log(`[director] 🏆 BOSS KILLED: ${bossName} by ${atkPlayer.name}`);
 					}
 				}
 				if (targetPlayer?.stats) {
@@ -902,7 +968,7 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			};
 
 			// ── Random encounter check ──
-			const encounter = checkForEncounter(state, destLoc.type, destLoc.dangerLevel);
+			const encounter = checkForEncounter(state, destLoc.type, destLoc.dangerLevel, char.inebriation);
 			if (encounter) {
 				moveResult.encounter = {
 					name: encounter.name,
@@ -1018,7 +1084,16 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			const quest = state.quests[input.quest_id];
 			if (!quest) return JSON.stringify({ error: 'Quest not found' });
 			if (input.action === 'activate') quest.status = 'active';
-			else if (input.action === 'complete') quest.status = 'complete';
+			else if (input.action === 'complete') {
+				quest.status = 'complete';
+				// Global broadcast for quest completion
+				const completerName = actingPlayerId ? state.players[actingPlayerId]?.name : 'A brave soul';
+				addLogEntry({
+					timestamp: new Date().toISOString(),
+					type: 'system',
+					text: `📜 QUEST COMPLETE: "${quest.name}" — ${completerName} finished the job. +${quest.xpReward} XP`
+				});
+			}
 			else if (input.action === 'fail') quest.status = 'failed';
 			else if (input.action === 'complete_objective' && input.objective_index !== undefined) {
 				if (quest.objectives[input.objective_index]) {
@@ -1140,6 +1215,11 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 				const hpGain = Math.max(1, Math.floor(hitDie / 2) + 1 + conMod);
 				char.maxHp += hpGain;
 				char.hp += hpGain;
+				addLogEntry({
+					timestamp: new Date().toISOString(),
+					type: 'system',
+					text: `🔥 LEVEL UP! 🔥 ${char.name} has reached Level ${newLevel}! +${hpGain} HP (${char.hp}/${char.maxHp})`
+				});
 			}
 			saveState();
 			return JSON.stringify({
@@ -1664,7 +1744,14 @@ const STATIC_RULES: string = [
 	'ROMANCE: On ANY romantic/sexual advance, call start_romance IMMEDIATELY. Do not write the scene, refuse, or fade to black. A separate engine handles it.',
 	'',
 	'XP: Kill → enemy xpValue. Quest objective → 50-100. Clever solution → 25-50. Skill check → 10-25. Level up every 1000 XP.',
-	'NPC RELATIONSHIPS: Call modify_relationship after meaningful interactions. Score drives attitude automatically (hostile <-50, suspicious -50 to -10, neutral -10 to 20, friendly >20). Let memories shape dialogue.',
+	'NPC RELATIONSHIPS: Call modify_relationship after meaningful interactions. Score drives attitude automatically (hostile <-50, suspicious -50 to -10, neutral -10 to 20, friendly >20).',
+	'',
+	'── NPC MEMORY & CONNECTIONS (CRITICAL) ──',
+	'When an NPC has memories of the player, you MUST weave at least one memory into their dialogue. If relationship score is > 30 or < -30, the NPC\'s greeting should STRONGLY reflect this — they remember you.',
+	'NPCs know each other. When talking to an NPC, reference their connections to other NPCs naturally. Mac mentions Jenny\'s investigation, Iron Mike talks about Ray\'s surveillance, Dee gossips about Sal. This is a community, not a collection of isolated quest dispensers.',
+	'',
+	'── LOOT ──',
+	'When an enemy dies, the system auto-rolls a loot drop and announces it to the player. Do NOT add items to inventory — just narrate what falls from the corpse. The player must explicitly "loot" or "pick up" to get items.',
 	'',
 	'Roll dice for uncertain outcomes. Keep it moving. Make it FUN.'
 ].join('\n');
@@ -1781,6 +1868,32 @@ function buildDynamicState(state: GameState, actingPlayerId?: string): { slow: s
 	// so it can't leak plot through NPC dialogue
 	const hideInfiltratorStatus = state.dayNumber <= 1 && (state.actionCounter ?? 0) < 15;
 
+	// Build NPC connections context for NPCs at the player's location
+	let npcConnectionsStr = '';
+	if (playerLocationId) {
+		const loc = state.locations[playerLocationId];
+		const nearbyNpcIds = loc?.npcs ?? [];
+		const connectionLines: string[] = [];
+		for (const npcId of nearbyNpcIds) {
+			const conns = NPC_CONNECTIONS[npcId];
+			if (conns && conns.length > 0) {
+				const npc = state.npcs[npcId];
+				if (npc?.alive) {
+					const connStrs = conns.map(c => {
+						const otherNpc = state.npcs[c.npcId];
+						return otherNpc ? `${otherNpc.name}: ${c.relationship}` : null;
+					}).filter(Boolean);
+					if (connStrs.length > 0) {
+						connectionLines.push(`${npc.name} knows: ${connStrs.join('; ')}`);
+					}
+				}
+			}
+		}
+		if (connectionLines.length > 0) {
+			npcConnectionsStr = '\nNPC CONNECTIONS (use these in dialogue):\n' + connectionLines.join('\n');
+		}
+	}
+
 	const slow = [
 		hideInfiltratorStatus
 			? 'INFILTRATORS: The invasion has barely begun. NPCs are NOT aware of infiltrators yet. Do NOT have NPCs discuss replacements, missing people, or anything conspiratorial. Everything is normal. Tiny environmental oddities only.'
@@ -1789,14 +1902,39 @@ function buildDynamicState(state: GameState, actingPlayerId?: string): { slow: s
 		'LOCATIONS: ' + formatLocations(state, playerLocationId),
 		'QUESTS: ' + formatQuests(state),
 		'NPCS: ' + formatNPCs(state, playerLocationId),
+		npcConnectionsStr,
 	].join('\n');
+
+	// Dawn/dusk atmospheric context + invasion threshold events
+	const dawnDusk = isDawnOrDusk(state);
+	const nightTime = isNightTime(state);
+	let timeContext = '';
+	if (dawnDusk === 'dawn') {
+		timeContext = '🌅 DAWN — The sky brightens over the Capitol dome. Describe the early light, the city waking up. Infiltrators are less active at dawn — they prefer the anonymity of crowds or darkness. The streets feel briefly, almost painfully normal.';
+	} else if (dawnDusk === 'dusk') {
+		timeContext = '🌆 DUSK — The sun sets behind the UW campus. Shadows stretch across State Street. Describe the transition — streetlights clicking on, the last normal people heading indoors, the city shifting to the infiltrators\' preferred hours. Tension should rise.';
+	} else if (nightTime) {
+		timeContext = '🌙 NIGHT — Madison after dark. The infiltrators are more active, patrols are heavier, and the streets belong to them. Describe darkness, cold light from wrong sources, the feeling of being watched. Safe areas feel safer; dangerous areas feel lethal.';
+	}
+
+	// Invasion threshold events
+	let invasionContext = '';
+	if (state.invasionLevel >= 75) {
+		invasionContext = '⚠️ INVASION CRITICAL (75%+) — Madison is nearly lost. Most public spaces feel wrong. NPC behavior should reflect terror and desperation. Infiltrator patrols are everywhere. Safe zones are shrinking. The resistance is running out of time.';
+	} else if (state.invasionLevel >= 50) {
+		invasionContext = '⚠️ INVASION ESCALATING (50%+) — The city is visibly changing. Empty streets, NutriSynth replacing food options, synchronized behavior in crowds. NPCs openly discuss what\'s happening. Fear is the dominant emotion.';
+	} else if (state.invasionLevel >= 25) {
+		invasionContext = 'INVASION SPREADING (25%+) — Something is clearly wrong in Madison. Missing person flyers everywhere, shops closing, people nervous. NPCs start sharing rumors and theories more freely.';
+	}
 
 	const fast = [
 		'── WORLD STATE ──',
 		'Time: Day ' + state.dayNumber + ', ' + state.worldTime + ' | Invasion: ' + state.invasionLevel + '% | Combat: ' + combatStr,
+		timeContext,
+		invasionContext,
 		'Players: ' + formatPlayerList(state),
 		'Flags: ' + JSON.stringify(state.globalFlags),
-	].join('\n');
+	].filter(Boolean).join('\n');
 
 	return { slow, fast };
 }
@@ -2188,11 +2326,40 @@ export async function processAction(
 			if (hour24 >= 24) {
 				hour24 -= 24;
 				state.dayNumber++;
+
+				// ── Invasion escalation on new day ──
+				const invasionBump = Math.min(10, 3 + state.dayNumber);
+				const oldInvasion = state.invasionLevel;
+				state.invasionLevel = Math.min(100, state.invasionLevel + invasionBump);
+
 				addLogEntry({
 					timestamp: new Date().toISOString(),
 					type: 'system',
 					text: `[DAY ${state.dayNumber} BEGINS] The sun rises over Madison. The city feels different today.`
 				});
+
+				// Invasion threshold events
+				if (oldInvasion < 25 && state.invasionLevel >= 25) {
+					addLogEntry({
+						timestamp: new Date().toISOString(),
+						type: 'system',
+						text: '═══ THE INFILTRATION SPREADS ═══\nMissing person flyers have doubled overnight. Three more shops on State Street closed without explanation. The Dane County emergency line has been busy since 4 AM. Something is accelerating.'
+					});
+				}
+				if (oldInvasion < 50 && state.invasionLevel >= 50) {
+					addLogEntry({
+						timestamp: new Date().toISOString(),
+						type: 'system',
+						text: '═══ MADISON IS CHANGING ═══\nNutriSynth dispensers have appeared on every block. Half the bus routes have been "temporarily suspended." The campus PA system played a tone at 3 AM that nobody authorized. People who were scared yesterday are calm today. That\'s worse.'
+					});
+				}
+				if (oldInvasion < 75 && state.invasionLevel >= 75) {
+					addLogEntry({
+						timestamp: new Date().toISOString(),
+						type: 'system',
+						text: '═══ THE CITY IS FALLING ═══\nMadison PD has gone silent. The Capitol dome lights pulse in a rhythm that matches the signal from the steam tunnels. Entire neighborhoods have gone dark — not power outages, just... quiet. The resistance is running out of time.'
+					});
+				}
 			}
 
 			const newAmpm = hour24 >= 12 ? 'PM' : 'AM';
