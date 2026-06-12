@@ -1439,15 +1439,17 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			else if (ampm === 'PM' && hour24 !== 12) hour24 += 12;
 
 			const oldDay = state.dayNumber;
-			let totalHours = hour24 + input.hours;
-			const daysAdvanced = Math.floor(totalHours / 24);
-			totalHours = totalHours % 24;
+			let totalMinutes = (hour24 * 60) + minutes + Math.round(input.hours * 60);
+			const daysAdvanced = Math.floor(totalMinutes / 1440);
+			totalMinutes = totalMinutes % 1440;
+			const newHour24 = Math.floor(totalMinutes / 60);
+			const newMins = totalMinutes % 60;
 
 			// Convert back to 12h format
-			const newAmpm = totalHours >= 12 ? 'PM' : 'AM';
-			let newHour12 = totalHours % 12;
+			const newAmpm = newHour24 >= 12 ? 'PM' : 'AM';
+			let newHour12 = newHour24 % 12;
 			if (newHour12 === 0) newHour12 = 12;
-			const newTimeStr = newHour12 + ':' + String(minutes).padStart(2, '0') + ' ' + newAmpm;
+			const newTimeStr = newHour12 + ':' + String(newMins).padStart(2, '0') + ' ' + newAmpm;
 
 			state.worldTime = newTimeStr;
 			state.dayNumber += daysAdvanced;
