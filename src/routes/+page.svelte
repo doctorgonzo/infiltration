@@ -1141,97 +1141,6 @@
 	</div>
 </div>
 
-
-<!-- ═══════════════════════════════════════════════════════════ -->
-<!-- SESSION SUMMARY OVERLAY                                    -->
-<!-- ═══════════════════════════════════════════════════════════ -->
-
-{#if showSessionSummary && character}
-<div class="session-overlay">
-	<div class="session-container">
-		<div class="session-icon">⏸</div>
-		<h1 class="session-title">SESSION SUMMARY</h1>
-		<div class="session-name">{character.name} the {character.class}</div>
-		<div class="session-subtitle">Level {character.level} · {character.hp}/{character.maxHp} HP · {character.location}</div>
-
-		<div class="session-stats">
-			<h2 class="stats-header">═══ THIS SESSION ═══</h2>
-			<div class="stats-grid">
-				<div class="stat-row">
-					<span class="stat-label">Session Duration</span>
-					<span class="stat-value">{(() => {
-						const ms = Date.now() - sessionStartTime;
-						const secs = Math.floor(ms / 1000);
-						if (secs < 60) return secs + 's';
-						const mins = Math.floor(secs / 60);
-						if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
-						const hrs = Math.floor(mins / 60);
-						return hrs + 'h ' + (mins % 60) + 'm';
-					})()}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">XP Earned</span>
-					<span class="stat-value session-delta">+{(character.xp ?? 0) - sessionStartXp}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">Enemies Killed</span>
-					<span class="stat-value session-delta">+{(character.stats?.enemiesKilled ?? 0) - sessionStartKills}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">Damage Dealt</span>
-					<span class="stat-value session-delta">+{(character.stats?.damageDealt ?? 0) - sessionStartDamageDealt}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">Damage Taken</span>
-					<span class="stat-value session-delta">+{(character.stats?.damageTaken ?? 0) - sessionStartDamageTaken}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">Items Found</span>
-					<span class="stat-value session-delta">+{(character.stats?.itemsFound ?? 0) - sessionStartItemsFound}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">Actions Performed</span>
-					<span class="stat-value session-delta">+{(character.stats?.actionsPerformed ?? 0) - sessionStartActions}</span>
-				</div>
-			</div>
-		</div>
-
-		<div class="session-stats session-lifetime">
-			<h2 class="stats-header">═══ LIFETIME TOTALS ═══</h2>
-			<div class="stats-grid">
-				<div class="stat-row">
-					<span class="stat-label">Total XP</span>
-					<span class="stat-value">{character.xp}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">Enemies Killed</span>
-					<span class="stat-value">{character.stats?.enemiesKilled ?? 0}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">Damage Dealt</span>
-					<span class="stat-value">{character.stats?.damageDealt ?? 0}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">Critical Hits</span>
-					<span class="stat-value">{character.stats?.criticalHits ?? 0}</span>
-				</div>
-				<div class="stat-row">
-					<span class="stat-label">Wealth</span>
-					<span class="stat-value">${character.wealth ?? 0}</span>
-				</div>
-			</div>
-		</div>
-
-		<button class="session-button" onclick={confirmSwitchCharacter}>
-			CONTINUE TO CHARACTER SELECT
-		</button>
-		<button class="session-cancel" onclick={() => { showSessionSummary = false; }}>
-			CANCEL
-		</button>
-	</div>
-</div>
-{/if}
-
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- DEATH SCREEN                                               -->
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -1611,6 +1520,96 @@
 			</button>
 		</div>
 	</main>
+</div>
+{/if}
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- SESSION SUMMARY OVERLAY                                    -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+{#if showSessionSummary && character}
+<div class="session-overlay">
+	<div class="session-container">
+		<div class="session-icon">⏸</div>
+		<h1 class="session-title">SESSION SUMMARY</h1>
+		<div class="session-name">{character.name} the {character.class}</div>
+		<div class="session-subtitle">Level {character.level} · {character.hp}/{character.maxHp} HP · {character.location}</div>
+
+		<div class="session-stats">
+			<h2 class="stats-header">═══ THIS SESSION ═══</h2>
+			<div class="stats-grid">
+				<div class="stat-row">
+					<span class="stat-label">Session Duration</span>
+					<span class="stat-value">{(() => {
+						const ms = Date.now() - sessionStartTime;
+						const secs = Math.floor(ms / 1000);
+						if (secs < 60) return secs + 's';
+						const mins = Math.floor(secs / 60);
+						if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
+						const hrs = Math.floor(mins / 60);
+						return hrs + 'h ' + (mins % 60) + 'm';
+					})()}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">XP Earned</span>
+					<span class="stat-value session-delta">+{(character.xp ?? 0) - sessionStartXp}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Enemies Killed</span>
+					<span class="stat-value session-delta">+{(character.stats?.enemiesKilled ?? 0) - sessionStartKills}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Damage Dealt</span>
+					<span class="stat-value session-delta">+{(character.stats?.damageDealt ?? 0) - sessionStartDamageDealt}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Damage Taken</span>
+					<span class="stat-value session-delta">+{(character.stats?.damageTaken ?? 0) - sessionStartDamageTaken}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Items Found</span>
+					<span class="stat-value session-delta">+{(character.stats?.itemsFound ?? 0) - sessionStartItemsFound}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Actions Performed</span>
+					<span class="stat-value session-delta">+{(character.stats?.actionsPerformed ?? 0) - sessionStartActions}</span>
+				</div>
+			</div>
+		</div>
+
+		<div class="session-stats session-lifetime">
+			<h2 class="stats-header">═══ LIFETIME TOTALS ═══</h2>
+			<div class="stats-grid">
+				<div class="stat-row">
+					<span class="stat-label">Total XP</span>
+					<span class="stat-value">{character.xp}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Enemies Killed</span>
+					<span class="stat-value">{character.stats?.enemiesKilled ?? 0}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Damage Dealt</span>
+					<span class="stat-value">{character.stats?.damageDealt ?? 0}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Critical Hits</span>
+					<span class="stat-value">{character.stats?.criticalHits ?? 0}</span>
+				</div>
+				<div class="stat-row">
+					<span class="stat-label">Wealth</span>
+					<span class="stat-value">${character.wealth ?? 0}</span>
+				</div>
+			</div>
+		</div>
+
+		<button class="session-button" onclick={confirmSwitchCharacter}>
+			CONTINUE TO CHARACTER SELECT
+		</button>
+		<button class="session-cancel" onclick={() => { showSessionSummary = false; }}>
+			CANCEL
+		</button>
+	</div>
 </div>
 {/if}
 
