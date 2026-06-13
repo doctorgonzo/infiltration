@@ -79,10 +79,18 @@ export const GET: RequestHandler = async ({ url }) => {
 			}])
 	);
 
+	// Projected in-game days until the city falls at the current drip rate.
+	const dailyBump = Math.max(1, Math.min(10, 3 + state.dayNumber) - (state.dripModifier ?? 0));
+	const daysToCollapse = state.invasionLevel >= 100
+		? 0
+		: Math.max(1, Math.ceil((100 - state.invasionLevel) / dailyBump));
+
 	return json({
 		worldTime: state.worldTime,
 		dayNumber: state.dayNumber,
 		invasionLevel: state.invasionLevel,
+		daysToCollapse,
+		gameOver: state.gameOver ?? null,
 		combat: {
 			active: state.combat.active,
 			round: state.combat.round,

@@ -662,6 +662,51 @@ const QUESTS: Record<string, Quest> = {
 };
 
 // ═══════════════════════════════════════════════════════════
+// Invasion clock — quest effects, finale gates, win/loss
+// ═══════════════════════════════════════════════════════════
+//
+// The invasion is a two-force system: a relentless daily drip UP
+// (the doomsday clock) and player victories that push it DOWN and/or
+// permanently slow the drip. The drip never fully stops (floored at
+// +1/day), so pushdowns BUY TIME but never win — the ONLY win is
+// closing the breach. See QUEST_NEEDLE below for the per-quest values.
+
+// Each major quest, on completion, shoves the invasion clock back.
+//   invasion: instant one-time change to invasionLevel (negative = pushed back)
+//   drip:     permanent reduction to the daily invasion bump (you dismantled
+//             infrastructure, so the city falls slower from here on)
+// something_wrong is pure onboarding (no needle); close_the_breach is the WIN.
+export const QUEST_NEEDLE: Record<string, { invasion: number; drip: number }> = {
+	beneath_the_dome:     { invasion: -20, drip: 0 },  // gut the conversion factory
+	kill_the_signal:      { invasion: -15, drip: 3 },  // cut coordination — biggest drip cut
+	you_are_what_you_eat: { invasion: -15, drip: 2 },  // poison the softening-up supply, citywide
+	show_must_go_on:      { invasion: -10, drip: 1 },  // kill the district replacement hub
+	high_ground:          { invasion: -8,  drip: 1 },  // knock out the coordination relay
+	bar_league:           { invasion: -5,  drip: 0 }   // arm the resistance
+};
+
+// The finale (close_the_breach) is gated by the mid-game. Both big dungeons
+// must be cleared first, and you need the device that drops from the Signal
+// Keeper. This is what makes the speedrun impossible by construction.
+export const FINALE_QUEST = 'close_the_breach';
+export const FINALE_PREREQ_QUESTS = ['beneath_the_dome', 'kill_the_signal'];
+export const FINALE_REQUIRED_ITEM = 'signal_jammer';
+
+// The Breach Guardian is empowered by how far the city has fallen. Every point
+// of invasion still standing when you reach the rift makes the last fight harder.
+// Returns scaled stats relative to the base enemy definition.
+export function scaleBreachGuardian(base: { hp: number; maxHp: number; attackBonus: number }, invasionLevel: number) {
+	// At 0% invasion: base stats. At 100%: +60% HP, +6 to-hit. Linear.
+	const t = Math.max(0, Math.min(100, invasionLevel)) / 100;
+	const hp = Math.round(base.maxHp * (1 + 0.6 * t));
+	return {
+		hp,
+		maxHp: hp,
+		attackBonus: base.attackBonus + Math.round(6 * t)
+	};
+}
+
+// ═══════════════════════════════════════════════════════════
 // Create the initial world state
 // ═══════════════════════════════════════════════════════════
 

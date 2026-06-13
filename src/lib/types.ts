@@ -241,7 +241,18 @@ export interface GameState {
 	parties: Record<string, Party>;        // keyed by party id
 	globalFlags: Record<string, boolean>; // world-state flags
 	invasionLevel: number;    // 0-100, how far the invasion has progressed
+	dripModifier?: number;    // accumulated permanent reduction to the daily invasion bump (from quest wins)
+	questNeedleApplied?: Record<string, boolean>; // quests whose invasion pushdown has already been applied (idempotency)
+	gameOver?: GameOverState; // set once the world reaches a terminal win/loss
 	gameLog: GameLogEntry[];  // recent events
+}
+
+export interface GameOverState {
+	result: 'won' | 'lost';
+	reason: string;
+	at: string;               // ISO timestamp
+	invasionAtEnd: number;
+	dayAtEnd: number;
 }
 
 export interface GameLogEntry {

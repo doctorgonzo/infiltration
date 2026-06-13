@@ -13,6 +13,9 @@
 	let sidebarOpen = $state(true);
 	let worldTime = $state<string>('');
 	let dayNumber = $state<number>(0);
+	let invasionLevel = $state<number>(0);
+	let daysToCollapse = $state<number | null>(null);
+	let gameOver = $state<{ result: 'won' | 'lost'; reason: string; invasionAtEnd: number; dayAtEnd: number } | null>(null);
 	let quests = $state<Array<{id: string; name: string; description: string; status: string; objectives: Array<{description: string; complete: boolean}>}>>([]);
 	let questsOpen = $state(true);
 	let eventSource: EventSource | null = null;
@@ -675,6 +678,9 @@
 			const data = await res.json();
 			if (data.worldTime) worldTime = data.worldTime;
 			if (data.dayNumber != null) dayNumber = data.dayNumber;
+			if (data.invasionLevel != null) invasionLevel = data.invasionLevel;
+			if (data.daysToCollapse != null) daysToCollapse = data.daysToCollapse;
+			gameOver = data.gameOver ?? null;
 			if (data.character) {
 				// Detect level-up via state poll
 				if (lastKnownLevel > 0 && data.character.level > lastKnownLevel) {
@@ -1236,6 +1242,27 @@
 
 {:else}
 <div class="game-layout">
+	<!-- Game Over Overlay -->
+	{#if gameOver}
+		<div class="gameover-overlay" class:won={gameOver.result === 'won'} class:lost={gameOver.result === 'lost'}>
+			<div class="gameover-card">
+				<div class="gameover-title">
+					{gameOver.result === 'won' ? 'MADISON STANDS' : 'THE CITY HAS FALLEN'}
+				</div>
+				<div class="gameover-sub">
+					{gameOver.result === 'won' ? 'The breach is closed.' : 'The invasion reached 100%.'}
+				</div>
+				<div class="gameover-reason">{gameOver.reason}</div>
+				<div class="gameover-stats">
+					Day {gameOver.dayAtEnd} · Invasion held at {gameOver.invasionAtEnd}%
+				</div>
+				<button class="death-button" onclick={() => { character = null; playerId = null; phase = 'name'; }}>
+					RETURN TO CHARACTER SELECT
+				</button>
+			</div>
+		</div>
+	{/if}
+
 	<!-- Sidebar -->
 	<aside class="sidebar" class:collapsed={!sidebarOpen}>
 		<button class="sidebar-toggle" onclick={() => sidebarOpen = !sidebarOpen}>
@@ -1251,6 +1278,26 @@
 						<div class="clock-day">DAY {dayNumber}</div>
 					</div>
 				{/if}
+
+				<!-- Invasion Clock -->
+				<div class="invasion-block" class:crit={invasionLevel >= 75} class:warn={invasionLevel >= 50 && invasionLevel < 75}>
+					<div class="invasion-label">
+						<span>INVASION</span>
+						<span class="invasion-pct">{invasionLevel}%</span>
+					</div>
+					<div class="invasion-bar">
+						<div class="invasion-fill" style="width: {invasionLevel}%"></div>
+					</div>
+					{#if daysToCollapse != null}
+						<div class="invasion-eta">
+							{#if invasionLevel >= 100}
+								Madison has fallen.
+							{:else}
+								≈ {daysToCollapse} day{daysToCollapse === 1 ? '' : 's'} to collapse
+							{/if}
+						</div>
+					{/if}
+				</div>
 
 				<!-- Character Header -->
 				<div class="char-header">
@@ -2525,6 +2572,121 @@
 		color: var(--green-dim);
 		letter-spacing: 0.2em;
 		margin-top: 0.15rem;
+	}
+
+	.invasion-block {
+		padding: 0.5rem 0.6rem;
+		margin-bottom: 0.75rem;
+		border: 1px solid var(--green-dark);
+		border-radius: 3px;
+		background: var(--bg-input);
+	}
+	.invasion-block.warn { border-color: var(--amber-dim); }
+	.invasion-block.crit { border-color: var(--red-dim); }
+
+	.invasion-label {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		letter-spacing: 0.18em;
+		color: var(--green-dim);
+		margin-bottom: 0.3rem;
+	}
+	.invasion-pct {
+		font-weight: 700;
+		color: var(--amber);
+	}
+	.invasion-block.warn .invasion-pct { color: var(--amber); }
+	.invasion-block.crit .invasion-pct { color: var(--red); }
+
+	.invasion-bar {
+		height: 6px;
+		background: var(--bg-dark);
+		border-radius: 3px;
+		overflow: hidden;
+	}
+	.invasion-fill {
+		height: 100%;
+		background: var(--green-dim);
+		transition: width 0.4s ease;
+	}
+	.invasion-block.warn .invasion-fill { background: var(--amber); }
+	.invasion-block.crit .invasion-fill {
+		background: var(--red);
+		animation: invasion-pulse 1.6s ease-in-out infinite;
+	}
+	@keyframes invasion-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.55; }
+	}
+
+	.invasion-eta {
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		letter-spacing: 0.05em;
+		color: var(--green-dim);
+		margin-top: 0.35rem;
+		text-align: right;
+	}
+	.invasion-block.crit .invasion-eta { color: var(--red); }
+
+	.gameover-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 1000;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: rgba(0, 0, 0, 0.88);
+		backdrop-filter: blur(3px);
+	}
+	.gameover-card {
+		max-width: 480px;
+		text-align: center;
+		padding: 2.5rem 2rem;
+		border: 1px solid var(--green-dark);
+		border-radius: 4px;
+		background: var(--bg-panel);
+	}
+	.gameover-overlay.won .gameover-card { border-color: var(--green-dim); }
+	.gameover-overlay.lost .gameover-card { border-color: var(--red-dim); }
+
+	.gameover-title {
+		font-family: var(--font-display);
+		font-size: 1.8rem;
+		font-weight: 700;
+		letter-spacing: 0.1em;
+		margin-bottom: 0.5rem;
+	}
+	.gameover-overlay.won .gameover-title {
+		color: var(--green-dim);
+		text-shadow: 0 0 18px rgba(0, 204, 51, 0.4);
+	}
+	.gameover-overlay.lost .gameover-title {
+		color: var(--red);
+		text-shadow: 0 0 18px rgba(255, 51, 51, 0.4);
+	}
+	.gameover-sub {
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		color: var(--amber);
+		margin-bottom: 1.25rem;
+		letter-spacing: 0.05em;
+	}
+	.gameover-reason {
+		font-size: 0.95rem;
+		color: var(--green-dim);
+		line-height: 1.5;
+		margin-bottom: 1rem;
+	}
+	.gameover-stats {
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		color: var(--green-dark);
+		letter-spacing: 0.1em;
+		margin-bottom: 1.75rem;
 	}
 
 	.header-clock {

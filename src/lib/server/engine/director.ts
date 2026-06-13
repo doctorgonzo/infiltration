@@ -8,7 +8,7 @@
 
 import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive, createParty, getPlayerParty, inviteToParty, joinParty, leaveParty, disbandParty, getPartyMembers, findPendingInvite, getCharacter, decayInebriation } from './state';
 import * as dice from './dice';
-import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop } from '$lib/server/world/madison';
+import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC } from '$lib/types';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
@@ -302,6 +302,52 @@ function detectMissedTools(narration: string, toolsCalled: string[]): string | n
 
 function countInfiltrators(state: GameState): number {
 	return Object.values(state.npcs).filter(n => n.isInfiltrator && n.alive).length;
+}
+
+// ── Invasion Clock ─────────────────────────────────────────
+// The daily invasion bump, after permanent reductions from quest wins.
+// Floored at +1/day — the rift always bleeds, so the clock never fully stops.
+function dailyInvasionBump(state: GameState): number {
+	const base = Math.min(10, 3 + state.dayNumber);
+	const reduced = base - (state.dripModifier ?? 0);
+	return Math.max(1, reduced);
+}
+
+// Rough projection of in-game days until the city falls at the current rate.
+// Used purely for player-facing legibility ("≈N days to collapse").
+function daysToCollapse(state: GameState): number {
+	const remaining = 100 - state.invasionLevel;
+	if (remaining <= 0) return 0;
+	return Math.max(1, Math.ceil(remaining / dailyInvasionBump(state)));
+}
+
+// Is the finale reachable/winnable yet? Both gate dungeons cleared + the device.
+function finaleGateStatus(state: GameState, actor?: Character): {
+	ready: boolean; missingQuests: string[]; hasItem: boolean;
+} {
+	const missingQuests = FINALE_PREREQ_QUESTS.filter(q => state.quests[q]?.status !== 'complete');
+	const hasItem = !!actor?.inventory.some(i => i.id === FINALE_REQUIRED_ITEM);
+	return { ready: missingQuests.length === 0 && hasItem, missingQuests, hasItem };
+}
+
+// Terminal win/loss. Idempotent — only fires once. Emits a loud, global log entry.
+function triggerGameOver(state: GameState, result: 'won' | 'lost', reason: string): void {
+	if (state.gameOver) return;
+	state.gameOver = {
+		result,
+		reason,
+		at: new Date().toISOString(),
+		invasionAtEnd: state.invasionLevel,
+		dayAtEnd: state.dayNumber
+	};
+	addLogEntry({
+		timestamp: new Date().toISOString(),
+		type: 'system',
+		text: result === 'won'
+			? `\n═══════════════════════════════\n   MADISON STANDS — THE BREACH IS CLOSED\n═══════════════════════════════\n${reason}\nThe rift collapses in on itself. The hum stops. For the first time in weeks, the city is quiet because it's at peace, not because it's gone. (Day ${state.dayNumber}, invasion held at ${state.invasionLevel}%.)`
+			: `\n═══════════════════════════════\n   THE CITY HAS FALLEN\n═══════════════════════════════\n${reason}\nMadison is theirs now. The people who are left smile in perfect unison. The resistance is over. (Day ${state.dayNumber}.)`
+	});
+	saveState();
 }
 
 // ── Time-of-Day Helper ─────────────────────────────────────
@@ -1085,14 +1131,67 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			if (!quest) return JSON.stringify({ error: 'Quest not found' });
 			if (input.action === 'activate') quest.status = 'active';
 			else if (input.action === 'complete') {
+				const actor = actingPlayerId ? state.players[actingPlayerId] : undefined;
+
+				// ── Finale gate enforcement ──
+				// The breach cannot be closed until both gate dungeons are cleared
+				// AND the player holds the signal jammer. Refuse completion otherwise
+				// and hand the Director a concrete reason to narrate the obstacle.
+				if (input.quest_id === FINALE_QUEST) {
+					const gate = finaleGateStatus(state, actor);
+					if (!gate.ready) {
+						const reasons: string[] = [];
+						if (gate.missingQuests.includes('beneath_the_dome')) {
+							reasons.push('The conversion chamber beneath the Capitol is still active — the rift draws endless reinforcements from it. (Complete "Beneath the Dome" first.)');
+						}
+						if (gate.missingQuests.includes('kill_the_signal')) {
+							reasons.push('The signal from the steam tunnels is holding the rift open and stable — it physically cannot be closed while the antenna broadcasts. (Complete "Kill the Signal" first.)');
+						}
+						if (!gate.hasItem) {
+							reasons.push('You lack the Signal Jammer needed to collapse the rift — it drops from the Signal Keeper in the steam tunnels.');
+						}
+						return JSON.stringify({
+							error: 'FINALE LOCKED — the breach cannot be closed yet.',
+							narrate_obstacle: reasons.join(' '),
+							instruction: 'Do NOT mark this quest complete. Narrate the rift refusing to close for the reasons above. Steer the player toward the missing prerequisites.'
+						});
+					}
+				}
+
 				quest.status = 'complete';
+
+				// ── Invasion pushdown (idempotent) ──
+				// Completing a major quest shoves the clock back and/or permanently
+				// slows the daily drip. Surface it loudly so the player learns the lever.
+				const needle = QUEST_NEEDLE[input.quest_id];
+				if (!state.questNeedleApplied) state.questNeedleApplied = {};
+				if (needle && !state.questNeedleApplied[input.quest_id]) {
+					state.questNeedleApplied[input.quest_id] = true;
+					if (needle.drip) state.dripModifier = (state.dripModifier ?? 0) + needle.drip;
+					if (needle.invasion) {
+						const before = state.invasionLevel;
+						state.invasionLevel = Math.min(100, Math.max(0, state.invasionLevel + needle.invasion));
+						const dripNote = needle.drip ? ` The infiltration will spread slower from here on.` : '';
+						addLogEntry({
+							timestamp: new Date().toISOString(),
+							type: 'system',
+							text: `🛡️ INVASION PUSHED BACK: ${before}% → ${state.invasionLevel}%. "${quest.name}" cost them ground.${dripNote}`
+						});
+					}
+				}
+
 				// Global broadcast for quest completion
-				const completerName = actingPlayerId ? state.players[actingPlayerId]?.name : 'A brave soul';
+				const completerName = actor?.name ?? 'A brave soul';
 				addLogEntry({
 					timestamp: new Date().toISOString(),
 					type: 'system',
 					text: `📜 QUEST COMPLETE: "${quest.name}" — ${completerName} finished the job. +${quest.xpReward} XP`
 				});
+
+				// ── Victory ──
+				if (input.quest_id === FINALE_QUEST) {
+					triggerGameOver(state, 'won', `${completerName} closed the dimensional breach at Garver Feed Mill.`);
+				}
 			}
 			else if (input.action === 'fail') quest.status = 'failed';
 			else if (input.action === 'complete_objective' && input.objective_index !== undefined) {
@@ -1141,6 +1240,23 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 		case 'start_combat': {
 			const players = getPlayersAtLocation(input.location);
 			const enemies = input.enemy_ids.map((id: string) => state.enemies[id]).filter(Boolean);
+
+			// ── Scale the Breach Guardian to how far the city has fallen ──
+			// The further the invasion has progressed, the deadlier the final
+			// defender — so the side quests that lower invasion literally make
+			// the last fight easier. One-time scale, guarded by a flag.
+			const guardian = state.enemies['breach_guardian'];
+			if (guardian && input.enemy_ids.includes('breach_guardian') && !(guardian as any)._scaled) {
+				const scaled = scaleBreachGuardian(
+					{ hp: guardian.hp, maxHp: guardian.maxHp, attackBonus: guardian.attackBonus },
+					state.invasionLevel
+				);
+				guardian.hp = scaled.hp;
+				guardian.maxHp = scaled.maxHp;
+				guardian.attackBonus = scaled.attackBonus;
+				(guardian as any)._scaled = true;
+				console.log(`[director]   ⚔️ Breach Guardian scaled to invasion ${state.invasionLevel}%: ${scaled.maxHp} HP, +${scaled.attackBonus} to hit`);
+			}
 
 			const initiative: Array<{ id: string; type: 'player' | 'enemy'; initiative: number }> = [];
 
@@ -1932,11 +2048,30 @@ function buildDynamicState(state: GameState, actingPlayerId?: string): { slow: s
 		invasionContext = 'INVASION SPREADING (25%+) — Something is clearly wrong in Madison. Missing person flyers everywhere, shops closing, people nervous. NPCs start sharing rumors and theories more freely.';
 	}
 
+	// ── Invasion clock + finale-gate legibility ──
+	// Give the Director the hard numbers so it can voice the countdown (Jenny Wu
+	// especially) and narrate the finale gates correctly — never let a loss be a
+	// surprise, never let the player think they can close the breach prematurely.
+	const bump = dailyInvasionBump(state);
+	const eta = daysToCollapse(state);
+	const gate = finaleGateStatus(state, playerCharacter);
+	const gateLine = gate.ready
+		? 'FINALE: UNLOCKED — both gate dungeons are clear and the player holds the Signal Jammer. The breach at Garver CAN now be closed.'
+		: `FINALE: LOCKED — the breach at Garver cannot be closed yet. Still needed: ${[
+			...gate.missingQuests.map(q => q === 'beneath_the_dome'
+				? 'shut down the Capitol conversion chamber ("Beneath the Dome")'
+				: 'destroy the steam-tunnel signal holding the rift open ("Kill the Signal")'),
+			...(gate.hasItem ? [] : ['the Signal Jammer (drops from the Signal Keeper)'])
+		].join('; ')}. If the player tries to close the breach, narrate the rift refusing for these reasons.`;
+	const clockContext = `INVASION CLOCK: ${state.invasionLevel}% now, rising +${bump}/day → city falls in ≈${eta} day${eta === 1 ? '' : 's'} at this rate. Completing major quests pushes this back. ${state.invasionLevel >= 50 ? 'At this level the resistance (esp. Jenny Wu) should be voicing the countdown openly and urgently — make the stakes and the clock legible to the player.' : ''}`;
+
 	const fast = [
 		'── WORLD STATE ──',
 		'Time: Day ' + state.dayNumber + ', ' + state.worldTime + ' | Invasion: ' + state.invasionLevel + '% | Combat: ' + combatStr,
 		timeContext,
 		invasionContext,
+		clockContext,
+		gateLine,
 		'Players: ' + formatPlayerList(state),
 		'Flags: ' + JSON.stringify(state.globalFlags),
 	].filter(Boolean).join('\n');
@@ -1959,6 +2094,21 @@ export async function processAction(
 	if (!character) {
 		return [{ timestamp: new Date().toISOString(), type: 'system', text: 'You need to create a character first.' }];
 	}
+
+	// ── World is over — freeze all action ──
+	// Win or loss is global (one shared Madison). Once the breach is closed or
+	// the city has fallen, no further actions resolve.
+	if (state.gameOver) {
+		const go = state.gameOver;
+		return [{
+			timestamp: new Date().toISOString(),
+			type: 'system',
+			text: go.result === 'won'
+				? `The breach is closed. Madison stands. The story ended on Day ${go.dayAtEnd} with the invasion held at ${go.invasionAtEnd}%. There is nothing left to do but live in the city you saved.`
+				: `Madison has fallen. The invasion reached 100% on Day ${go.dayAtEnd}. There are no more moves to make — the resistance is over.`
+		}];
+	}
+
 	const trimmedAction = action.trim();
 
 	// ── Inebriation decay — sober up over real time ──
@@ -2324,7 +2474,10 @@ export async function processAction(
 				state.dayNumber++;
 
 				// ── Invasion escalation on new day ──
-				const invasionBump = Math.min(10, 3 + state.dayNumber);
+				// Daily drip, reduced by permanent dismantling from quest wins,
+				// floored at +1 (the rift always bleeds). Pushdowns buy time but
+				// can never fully stop the clock — only closing the breach wins.
+				const invasionBump = dailyInvasionBump(state);
 				const oldInvasion = state.invasionLevel;
 				state.invasionLevel = Math.min(100, state.invasionLevel + invasionBump);
 
@@ -2364,6 +2517,11 @@ export async function processAction(
 			state.worldTime = newHour12 + ':' + String(mins).padStart(2, '0') + ' ' + newAmpm;
 			saveState();
 			console.log(`[director] ⏰ Auto time tick: ${state.worldTime} (Day ${state.dayNumber})`);
+
+			// ── Loss condition: the clock ran out ──
+			if (state.invasionLevel >= 100) {
+				triggerGameOver(state, 'lost', 'The invasion reached 100%. There was no one left to close the breach.');
+			}
 		}
 	}
 
