@@ -2505,7 +2505,22 @@ ${sameLocation.length > 0
 		moneyDirective = '\n\n[SYSTEM DIRECTIVE] The player is giving, paying, or spending money. You MUST call modify_wealth with a NEGATIVE amount for the player. If the player receives change, call modify_wealth twice (negative for payment, positive for change) or call once with the net cost. Do NOT narrate money changing hands without calling modify_wealth.';
 	}
 
-	const userMessage = `${charContext}\n${locContext}${partyContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${character.name} says: "${action}"${skillCheckDirective}${moneyDirective}`;
+	// First-action arrival framing — the client auto-fires a /look on join, so the
+	// player's very first action (actionsPerformed still 0 here; it increments after)
+	// is the opening scene. Frame it as walking IN off the street, not waking up in
+	// the bar. Noir cold open: establish King Street's wrongness, then land inside.
+	let arrivalDirective = '';
+	if (character.stats && character.stats.actionsPerformed === 0) {
+		arrivalDirective = `\n\n[SYSTEM DIRECTIVE — OPENING SCENE] This is ${character.name}'s very first moment in the game. Do NOT describe them already seated or waking up inside The Rigby. Instead, open with a short NOIR COLD OPEN: they are walking IN off King Street and stepping through the door for the first time. In 2-4 tight, atmospheric sentences, establish the street before the door — name at least two nearby points of interest from King Street and let each carry a small wrongness, e.g.:
+- The Majestic Theatre down the block, marquee reading "COMMUNITY WELLNESS SEMINAR" in letters that weren't there before.
+- Mickey's Tavern two doors up (6 AM "softball practice," everyone brings bats).
+- The Dane County parking ramp at the end of the street, a drone's red sensor sweeping the top deck.
+- The Willy Street Co-op east of here, missing-person flyers nobody takes down.
+- A knot of identical business-casual strangers leaving a side door in perfect, silent unison.
+Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Christmas lights, sticky floor, Tom Waits or Hank Williams on the jukebox — as the one door on the block that doesn't make their skin crawl. Then hand control back to the player. Keep it taut and ominous; do not over-explain the conspiracy.`;
+	}
+
+	const userMessage = `${charContext}\n${locContext}${partyContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${character.name} says: "${action}"${arrivalDirective}${skillCheckDirective}${moneyDirective}`;
 
 	// Call Claude
 	const entries: GameLogEntry[] = [];
@@ -2517,6 +2532,9 @@ ${sameLocation.length > 0
 	console.log(`[director]   Day ${state.dayNumber}, ${state.worldTime}`);
 	if (skillCheckDirective) {
 		console.log(`[director]   🎲 SKILL CHECK DIRECTIVE injected — forcing dice roll before narration`);
+	}
+	if (arrivalDirective) {
+		console.log(`[director]   🚪 ARRIVAL DIRECTIVE injected — noir cold open for first scene`);
 	}
 	console.log(`${'─'.repeat(60)}`);
 
