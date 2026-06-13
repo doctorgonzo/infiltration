@@ -27,3 +27,6 @@ gamedata/world.json
 
 # Claude
 .claude/
+
+# Stray saved dashboard pages
+Control Panel*.html
