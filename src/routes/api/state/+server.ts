@@ -16,8 +16,8 @@ export const GET: RequestHandler = async ({ url }) => {
 
 	// Touch activity — keeps character "online" while they have the page open
 	if (playerId && character) {
-		touchCharacter(playerId);
 		decayInebriation(character);
+		touchCharacter(playerId);
 	}
 
 	// Public location info (only discovered locations)
