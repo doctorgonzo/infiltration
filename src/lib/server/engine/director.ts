@@ -2293,7 +2293,9 @@ export async function processAction(
 		}
 	}
 
-	// Log the player's action
+	// Log the player's action. Snapshot "first action ever" BEFORE incrementing —
+	// the arrival directive (built later) needs to know this was action #0.
+	const isFirstAction = character.stats?.actionsPerformed === 0;
 	if (character.stats) character.stats.actionsPerformed++;
 
 	// ── Automatic time advancement ──
@@ -2510,7 +2512,7 @@ ${sameLocation.length > 0
 	// is the opening scene. Frame it as walking IN off the street, not waking up in
 	// the bar. Noir cold open: establish King Street's wrongness, then land inside.
 	let arrivalDirective = '';
-	if (character.stats && character.stats.actionsPerformed === 0) {
+	if (isFirstAction) {
 		arrivalDirective = `\n\n[SYSTEM DIRECTIVE — OPENING SCENE] This is ${character.name}'s very first moment in the game. Do NOT describe them already seated or waking up inside The Rigby. Instead, open with a short NOIR COLD OPEN: they are walking IN off King Street and stepping through the door for the first time. In 2-4 tight, atmospheric sentences, establish the street before the door — name at least two nearby points of interest from King Street and let each carry a small wrongness, e.g.:
 - The Majestic Theatre down the block, marquee reading "COMMUNITY WELLNESS SEMINAR" in letters that weren't there before.
 - Mickey's Tavern two doors up (6 AM "softball practice," everyone brings bats).
