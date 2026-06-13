@@ -185,6 +185,22 @@ export function deleteCharacter(id: string): Character | undefined {
 /**
  * Mark a character as active (touch their lastActive timestamp)
  */
+export function decayInebriation(character: Character): void {
+	if (character.inebriation <= 0) return;
+	const ref = character.lastDrinkDecay ?? character.lastActive;
+	if (!ref) return;
+	const elapsed = Date.now() - new Date(ref).getTime();
+	const decay = Math.floor(elapsed / 90000); // -1 per 90 seconds
+	if (decay > 0) {
+		const oldLevel = character.inebriation;
+		character.inebriation = Math.max(0, character.inebriation - decay);
+		if (character.inebriation < oldLevel) {
+			character.lastDrinkDecay = new Date().toISOString();
+			saveState();
+		}
+	}
+}
+
 export function touchCharacter(id: string): void {
 	const state = getState();
 	if (state.players[id]) {

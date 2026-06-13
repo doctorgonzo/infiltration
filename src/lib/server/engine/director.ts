@@ -6,7 +6,7 @@
 // Tool use keeps the game honest.
 // ═══════════════════════════════════════════════════════════
 
-import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive, createParty, getPlayerParty, inviteToParty, joinParty, leaveParty, disbandParty, getPartyMembers, findPendingInvite, getCharacter } from './state';
+import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive, createParty, getPlayerParty, inviteToParty, joinParty, leaveParty, disbandParty, getPartyMembers, findPendingInvite, getCharacter, decayInebriation } from './state';
 import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC } from '$lib/types';
@@ -1189,7 +1189,10 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 
 			const oldLevel = char.inebriation ?? 0;
 			char.inebriation = Math.max(0, Math.min(10, oldLevel + input.amount));
-			if (input.amount > 0 && char.stats) char.stats.drinksConsumed++;
+			if (input.amount > 0) {
+				char.lastDrinkDecay = new Date().toISOString();
+				if (char.stats) char.stats.drinksConsumed++;
+			}
 			saveState();
 			return JSON.stringify({
 				character: char.name,
@@ -1959,19 +1962,8 @@ export async function processAction(
 	const trimmedAction = action.trim();
 
 	// ── Inebriation decay — sober up over real time ──
-	if (character.inebriation > 0 && character.lastActive) {
-		const elapsed = Date.now() - new Date(character.lastActive).getTime();
-		const minutesPassed = elapsed / 60000;
-		// -1 per 90 seconds of real time between actions
-		const decay = Math.floor(minutesPassed / 1.5);
-		if (decay > 0) {
-			const oldLevel = character.inebriation;
-			character.inebriation = Math.max(0, character.inebriation - decay);
-			if (character.inebriation < oldLevel) {
-				saveState();
-			}
-		}
-	}
+	decayInebriation(character);
+
 
 	// ── /admin toggle ────────────────────────────────
 	if (action.trim().toLowerCase() === '/admin') {

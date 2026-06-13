@@ -108,6 +108,7 @@ export interface Character {
 	godMode?: boolean;        // /admin toggle — 1000 HP, always nat 20
 	originalMaxHp?: number;   // stash real maxHp when godMode activates
 	inebriation: number;      // 0-10 drunk/high scale
+	lastDrinkDecay?: string;  // ISO timestamp — last time inebriation decayed
 	romanceMode?: boolean;    // routed to local uncensored model
 	romanceNpc?: string;      // NPC id or name for active romance
 	romanceContext?: string;  // scene context from the Director
