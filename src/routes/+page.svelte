@@ -1930,16 +1930,20 @@
 
 	.join-screen {
 		height: 100vh;
+		height: 100dvh;
 		display: flex;
-		align-items: center;
 		justify-content: center;
 		padding: 2rem;
 		background: radial-gradient(ellipse at center, #0d1a0d 0%, #0a0a0a 70%);
+		overflow-y: auto;
 	}
 
 	.join-container {
 		max-width: 640px;
 		width: 100%;
+		/* margin:auto centers vertically without clipping the top when
+		   the content is taller than the viewport (flexbox scroll fix) */
+		margin: auto;
 	}
 
 	.title-block {
@@ -3310,6 +3314,36 @@
 			border-radius: 0 4px 4px 0;
 			padding: 8px;
 		}
+
+		/* ── Mobile padding / overflow tightening ───────────── */
+
+		.join-screen { padding: 1.5rem 1rem; }
+		.join-form { padding: 1.25rem 1rem; }
+
+		/* Death screen */
+		.death-screen { padding: 1.5rem 1rem; }
+		.death-title { font-size: 2rem; letter-spacing: 0.15em; }
+
+		/* Session summary + game-over overlays */
+		.session-overlay { padding: 1rem; }
+		.gameover-card { padding: 1.5rem 1.25rem; }
+
+		/* Level-up overlay — these sizes blow past a phone's width */
+		.levelup-flash { width: 320px; height: 320px; margin: -160px 0 0 -160px; }
+		.levelup-label { font-size: 2rem; letter-spacing: 0.15em; }
+		.levelup-number { font-size: 4.5rem; }
+
+		/* In-game terminal header — keep it from overflowing horizontally */
+		.header-left { gap: 0.4rem; flex-wrap: wrap; }
+		.header-location { font-size: 0.7rem; }
+		.header-clock { font-size: 0.7rem; }
+
+		/* Command palette dropdown */
+		.cmd-name { min-width: 100px; }
+		.cmd-desc { display: none; }
+
+		/* Action input bar */
+		.input-bar { padding: 0.5rem 0.75rem; }
 	}
 
 	/* ── Inebriation Effects ───────────────────────────── */
