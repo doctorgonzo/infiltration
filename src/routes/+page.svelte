@@ -148,6 +148,34 @@
 		}
 	}
 
+	// Owner billing cleanup — reset an orphaned account back to free.
+	let resetEmail = $state('');
+	let resetBusy = $state(false);
+
+	async function resetBilling() {
+		const email = resetEmail.trim();
+		if (!email || resetBusy) return;
+		resetBusy = true;
+		modError = '';
+		modNotice = '';
+		try {
+			const res = await fetch('/api/admin/reset-billing', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email })
+			});
+			const data = await res.json();
+			if (!res.ok) { modError = data.error || 'Could not reset billing.'; return; }
+			modNotice = `${email} reset to a clean Free account.`;
+			resetEmail = '';
+			await loadModAccounts();
+		} catch {
+			modError = 'Connection lost.';
+		} finally {
+			resetBusy = false;
+		}
+	}
+
 	async function revokeMod(email: string) {
 		if (modBusy) return;
 		modBusy = true;
@@ -1969,6 +1997,26 @@
 				{/each}
 			</ul>
 		{/if}
+
+		<div class="mod-list-header">— RESET BILLING —</div>
+		<p class="mod-reset-note">
+			Drop an orphaned account back to a clean Free tier (e.g. a leftover test-mode
+			purchase). Doesn't cancel anything in Stripe — for a real subscription, use the portal.
+		</p>
+		<div class="mod-grant">
+			<input
+				class="mod-input"
+				type="email"
+				placeholder="orphan@example.com"
+				autocomplete="off"
+				bind:value={resetEmail}
+				onkeydown={(e) => { if (e.key === 'Enter') resetBilling(); }}
+				disabled={resetBusy}
+			/>
+			<button class="mod-reset-btn" onclick={resetBilling} disabled={resetBusy || !resetEmail.trim()}>
+				{resetBusy ? 'RESETTING…' : 'RESET TO FREE'}
+			</button>
+		</div>
 	</div>
 </div>
 {/if}
@@ -2979,6 +3027,38 @@
 	}
 
 	.mod-revoke:disabled {
+		opacity: 0.4;
+		cursor: default;
+	}
+
+	.mod-reset-note {
+		text-align: center;
+		color: var(--green-dim);
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		line-height: 1.5;
+		margin: 0 0 0.85rem;
+	}
+
+	.mod-reset-btn {
+		background: transparent;
+		border: 1px solid var(--amber);
+		color: var(--amber);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		letter-spacing: 0.08em;
+		padding: 0.6rem 1.1rem;
+		cursor: pointer;
+		white-space: nowrap;
+		transition: all 0.2s;
+	}
+
+	.mod-reset-btn:hover:not(:disabled) {
+		background: var(--amber);
+		color: #0a0a0a;
+	}
+
+	.mod-reset-btn:disabled {
 		opacity: 0.4;
 		cursor: default;
 	}

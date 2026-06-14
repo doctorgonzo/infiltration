@@ -107,6 +107,24 @@ export function setUserRoleByEmail(email: string, role: Role): User | null {
 	return getUserByEmail(normalized);
 }
 
+// Wipe a user's billing back to a clean free account: drop the tier, clear the
+// Stripe customer link + subscription fields. For orphaned accounts (e.g. a
+// test-mode purchase left behind after going live, or a refunded sub). Does NOT
+// touch Stripe — there's no live subscription behind an orphan to cancel.
+// Returns the updated user, or null if no such account.
+export function resetUserBillingByEmail(email: string): User | null {
+	const db = getDb();
+	const normalized = normalizeEmail(email);
+	const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalized) as { id: string } | undefined;
+	if (!existing) return null;
+	db.prepare(
+		`UPDATE users
+		    SET tier = 'free', stripe_customer_id = NULL, subscription_status = NULL, current_period_end = NULL
+		  WHERE email = ?`
+	).run(normalized);
+	return getUserByEmail(normalized);
+}
+
 // ── Sessions ───────────────────────────────────────────────
 
 // Create a session for a user. Returns the RAW session token for the cookie.
