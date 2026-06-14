@@ -10,10 +10,12 @@ export const SESSION_COOKIE = 'infiltration_session';
 const MAGIC_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
+export type Role = 'user' | 'owner' | 'moderator';
+
 export interface User {
 	id: string;
 	email: string;
-	role: 'user' | 'owner';
+	role: Role;
 	tier: string;
 	stripe_customer_id: string | null;
 	subscription_status: string | null;
@@ -86,6 +88,23 @@ export function findOrCreateUser(email: string): User {
 		 VALUES (@id, @email, @role, @tier, @stripe_customer_id, @subscription_status, @current_period_end, @romance_turns_used, @created_at)`
 	).run(user);
 	return user;
+}
+
+export function getUserByEmail(email: string): User | null {
+	return (
+		(getDb().prepare('SELECT * FROM users WHERE email = ?').get(normalizeEmail(email)) as User | undefined) ?? null
+	);
+}
+
+// Set a user's role by email. Returns the updated user, or null if no such
+// account exists yet (the person must have logged in at least once first).
+export function setUserRoleByEmail(email: string, role: Role): User | null {
+	const db = getDb();
+	const normalized = normalizeEmail(email);
+	const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalized) as { id: string } | undefined;
+	if (!existing) return null;
+	db.prepare('UPDATE users SET role = ? WHERE email = ?').run(role, normalized);
+	return getUserByEmail(normalized);
 }
 
 // ── Sessions ───────────────────────────────────────────────

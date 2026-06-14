@@ -11,6 +11,7 @@ import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC, Item } from '$lib/types';
 import { syncAdvancement } from '$lib/progression';
+import { resolveModelForCharacter, type NarrationModel } from '$lib/server/entitlements';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -66,6 +67,8 @@ type DirectorRequest = {
 	messages: any[];
 	tools: any[];
 	enforcementMode: boolean;
+	// Tier-resolved narration model for this action (enforcement always uses Haiku).
+	narrationModel: NarrationModel;
 };
 type NormalizedResponse = { content: any[]; stop_reason: string; usage?: any };
 
@@ -77,7 +80,11 @@ async function callDirectorLLM(req: DirectorRequest): Promise<NormalizedResponse
 }
 
 async function callCloudDirector(req: DirectorRequest): Promise<NormalizedResponse> {
-	const { system, messages, tools, enforcementMode } = req;
+	const { system, messages, tools, enforcementMode, narrationModel } = req;
+	// Enforcement rounds always run on cheap Haiku; narration rides the player's
+	// tier-resolved model. effort is GA on Sonnet/Opus 4.6 but ERRORS on Haiku 4.5,
+	// so it's only sent when the resolved model actually carries one.
+	const effort = enforcementMode ? undefined : narrationModel.effort;
 	const response = await fetch('https://api.anthropic.com/v1/messages', {
 		method: 'POST',
 		headers: {
@@ -87,17 +94,14 @@ async function callCloudDirector(req: DirectorRequest): Promise<NormalizedRespon
 			'anthropic-beta': 'prompt-caching-2024-07-31'
 		},
 		body: JSON.stringify({
-			// Opus 4.6 (medium effort) for primary narration + tool decisions, Haiku for enforcement rounds.
-			model: enforcementMode ? 'claude-haiku-4-5-20251001' : 'claude-opus-4-6',
+			model: enforcementMode ? 'claude-haiku-4-5-20251001' : narrationModel.model,
 			max_tokens: 1024,
 			temperature: 0.8,
 			system,
 			messages,
 			tools,
-			// effort is GA on Opus 4.6 but ERRORS on Haiku 4.5 — only send it on the narration call.
-			...(enforcementMode
-				? { tool_choice: { type: 'any' as const } }
-				: { output_config: { effort: 'medium' as const } })
+			...(enforcementMode ? { tool_choice: { type: 'any' as const } } : {}),
+			...(effort ? { output_config: { effort } } : {})
 		})
 	});
 	if (!response.ok) {
@@ -2131,6 +2135,9 @@ export async function processAction(
 		return [{ timestamp: new Date().toISOString(), type: 'system', text: 'You need to create a character first.' }];
 	}
 
+	// Tier → narration model, resolved once per action from the character's owner.
+	const narrationModel = resolveModelForCharacter(playerId);
+
 	// ── World is over — freeze all action ──
 	// Win or loss is global (one shared Madison). Once the breach is closed or
 	// the city has fallen, no further actions resolve.
@@ -2919,7 +2926,8 @@ Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Chr
 					],
 					messages,
 					tools: toolsWithCache,
-					enforcementMode
+					enforcementMode,
+					narrationModel
 				});
 			} catch (e: any) {
 				console.error('[director] LLM error:', e?.message ?? e);

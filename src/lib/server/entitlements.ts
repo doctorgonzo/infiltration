@@ -1,0 +1,140 @@
+// ═══════════════════════════════════════════════════════════
+// ENTITLEMENTS — the value ladder. Maps a user's tier to the
+// narration model they get and the monthly action cap they're
+// metered against. The Director routes its model off this; the
+// action endpoint meters off this. See docs/monetization-spec.md.
+// ═══════════════════════════════════════════════════════════
+
+import { getDb } from '$lib/server/db';
+import { getCharacterOwner } from '$lib/server/ownership';
+
+// The model the narration call uses. Effort is GA on Sonnet/Opus 4.6 and
+// CHEAPER than the default 'high'; it ERRORS on Haiku, so Haiku omits it.
+export type NarrationModel = { model: string; effort?: 'medium' };
+
+const HAIKU: NarrationModel = { model: 'claude-haiku-4-5-20251001' };
+const SONNET: NarrationModel = { model: 'claude-sonnet-4-6', effort: 'medium' };
+const OPUS: NarrationModel = { model: 'claude-opus-4-6', effort: 'medium' };
+
+export type Tier = 'free' | 'adventurer' | 'hero' | 'champion' | 'legend';
+
+export type TierConfig = {
+	label: string;
+	priceUsd: number;
+	model: NarrationModel;
+	// Monthly action cap (a player "action" = one turn to the Director).
+	monthlyActions: number;
+	// Free tier gets a romance teaser then a hard stop; paid unlocks fully.
+	romanceTurns: number; // Infinity == unlocked
+};
+
+export const TIERS: Record<Tier, TierConfig> = {
+	free:       { label: 'Free',       priceUsd: 0,   model: HAIKU,  monthlyActions: 25,   romanceTurns: 5 },
+	adventurer: { label: 'Adventurer', priceUsd: 5,   model: HAIKU,  monthlyActions: 500,  romanceTurns: Infinity },
+	hero:       { label: 'Hero',       priceUsd: 15,  model: SONNET, monthlyActions: 800,  romanceTurns: Infinity },
+	champion:   { label: 'Champion',   priceUsd: 25,  model: SONNET, monthlyActions: 1500, romanceTurns: Infinity },
+	legend:     { label: 'Legend',     priceUsd: 100, model: OPUS,   monthlyActions: 3500, romanceTurns: Infinity }
+};
+
+function isTier(t: string): t is Tier {
+	return t in TIERS;
+}
+
+// Owner (Doc) and moderators (comped friends) both play free + uncapped, and
+// neither gets the /cheat menu (that stays on the separate character.isAdmin
+// flag). They differ only on model: owner narrates on Opus, moderators on
+// Sonnet medium — great quality without comping Opus to a whole friend group.
+function isElevated(role: string): boolean {
+	return role === 'owner' || role === 'moderator';
+}
+
+type UserRow = { id: string; role: string; tier: string };
+
+function getUserRow(userId: string): UserRow | null {
+	const row = getDb()
+		.prepare('SELECT id, role, tier FROM users WHERE id = ?')
+		.get(userId) as UserRow | undefined;
+	return row ?? null;
+}
+
+// Current metering period, UTC. One bucket per calendar month.
+export function currentPeriod(now = new Date()): string {
+	return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+// ── Model routing ──────────────────────────────────────────
+// The owner (Doc) always narrates on Opus — it's his game. Everyone else
+// rides their tier. Unknown/ownerless characters fall back to the cheapest
+// model so a stray request can never cost Opus money.
+export function resolveModelForUser(userId: string | null): NarrationModel {
+	if (!userId) return HAIKU;
+	const row = getUserRow(userId);
+	if (!row) return HAIKU;
+	if (row.role === 'owner') return OPUS;
+	if (row.role === 'moderator') return SONNET;
+	return isTier(row.tier) ? TIERS[row.tier].model : HAIKU;
+}
+
+export function resolveModelForCharacter(characterId: string): NarrationModel {
+	return resolveModelForUser(getCharacterOwner(characterId));
+}
+
+// ── Action metering ────────────────────────────────────────
+export type Allowance = {
+	allowed: boolean;
+	used: number;
+	cap: number; // Infinity == uncapped (owner)
+	remaining: number;
+	tier: Tier | 'owner' | 'moderator';
+};
+
+function tierFor(row: UserRow | null): Tier {
+	if (row && isTier(row.tier)) return row.tier;
+	return 'free';
+}
+
+function actionsUsed(userId: string, period: string): number {
+	const row = getDb()
+		.prepare('SELECT actions_used FROM usage WHERE user_id = ? AND period = ?')
+		.get(userId, period) as { actions_used: number } | undefined;
+	return row?.actions_used ?? 0;
+}
+
+// Is this user allowed to take another action right now?
+export function checkActionAllowance(userId: string, now = new Date()): Allowance {
+	const row = getUserRow(userId);
+	const period = currentPeriod(now);
+	const used = actionsUsed(userId, period);
+
+	// Owner + moderators are uncapped at the action layer (budget governor still applies).
+	if (row && isElevated(row.role)) {
+		return { allowed: true, used, cap: Infinity, remaining: Infinity, tier: row.role as 'owner' | 'moderator' };
+	}
+
+	const tier = tierFor(row);
+	const cap = TIERS[tier].monthlyActions;
+	const remaining = Math.max(0, cap - used);
+	return { allowed: used < cap, used, cap, remaining, tier };
+}
+
+// Record one consumed action (and optionally token/cost telemetry for the
+// budget governor). Upserts the monthly bucket atomically.
+export function recordAction(
+	userId: string,
+	usage: { tokensIn?: number; tokensOut?: number; costUsd?: number } = {},
+	now = new Date()
+): void {
+	const period = currentPeriod(now);
+	const { tokensIn = 0, tokensOut = 0, costUsd = 0 } = usage;
+	getDb()
+		.prepare(
+			`INSERT INTO usage (user_id, period, actions_used, tokens_in, tokens_out, cost_usd)
+			 VALUES (?, ?, 1, ?, ?, ?)
+			 ON CONFLICT(user_id, period) DO UPDATE SET
+			   actions_used = actions_used + 1,
+			   tokens_in    = tokens_in + excluded.tokens_in,
+			   tokens_out   = tokens_out + excluded.tokens_out,
+			   cost_usd     = cost_usd + excluded.cost_usd`
+		)
+		.run(userId, period, tokensIn, tokensOut, costUsd);
+}

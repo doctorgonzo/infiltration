@@ -7,6 +7,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getCharacter, getSession, addSession, touchCharacter, withPlayerLock } from '$lib/server/engine/state';
 import { userOwnsCharacter } from '$lib/server/ownership';
+import { checkActionAllowance, recordAction } from '$lib/server/entitlements';
 import { processAction } from '$lib/server/engine/director';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -43,6 +44,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return json({ error: `${character.name} is dead. The infiltrators won this round.` }, { status: 403 });
 	}
 
+	// Entitlement: meter this action against the player's monthly tier cap.
+	// Owner is uncapped. 402 = out of moves → the client surfaces an upgrade prompt.
+	const allowance = checkActionAllowance(locals.user.id);
+	if (!allowance.allowed) {
+		return json(
+			{
+				error: `You're out of moves for this month (${allowance.used}/${allowance.cap} on the ${allowance.tier} plan). Upgrade for more.`,
+				code: 'action_cap_reached',
+				allowance: { used: allowance.used, cap: allowance.cap, tier: allowance.tier }
+			},
+			{ status: 402 }
+		);
+	}
+
 	// Auto-restore session if character exists but session was lost (server restart)
 	let session = getSession(playerId);
 	if (!session) {
@@ -60,6 +75,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	try {
 		const entries = await withPlayerLock(playerId, () => processAction(playerId, action.trim()));
+
+		// Count the move only once it actually resolved (don't bill failed turns).
+		recordAction(locals.user.id);
 
 		return json({
 			entries,
