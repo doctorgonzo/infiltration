@@ -22,8 +22,8 @@ Thumbs.db
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# Game data (persistent world state)
-gamedata/world.json
+# Game data (persistent world state + SQLite accounts/billing DB)
+gamedata/
 
 # Claude
 .claude/
