@@ -12,12 +12,81 @@
 	let playerId = $state<string | null>(null);
 
 	// ── Auth (hard mode: login required) ──────────────────
-	interface AuthUser { id: string; email: string; role: string; tier: string; }
+	interface AuthUser {
+		id: string;
+		email: string;
+		role: string;
+		tier: string;
+		subscription_status?: string | null;
+		current_period_end?: number | null;
+	}
 	let authUser = $state<AuthUser | null>(null);
 	let loginEmail = $state('');
 	let loginSending = $state(false);
 	let loginSent = $state(false);
 	let loginError = $state('');
+
+	// ── Billing / pricing ─────────────────────────────────
+	// Plan catalog mirrors the server's TIERS (entitlements.ts) but lives here
+	// because that module is server-only (it imports the DB). Keep in sync.
+	const PLANS = [
+		{ tier: 'adventurer', label: 'Adventurer', price: 5, moves: '500 moves / mo', director: 'Standard Director', perk: 'Unlimited romance' },
+		{ tier: 'hero', label: 'Hero', price: 15, moves: '800 moves / mo', director: 'Smarter Director', perk: 'Unlimited romance' },
+		{ tier: 'champion', label: 'Champion', price: 25, moves: '1,500 moves / mo', director: 'Smarter Director', perk: 'Unlimited romance' },
+		{ tier: 'legend', label: 'Legend', price: 100, moves: '3,500 moves / mo', director: 'The best Director', perk: 'Unlimited romance' }
+	] as const;
+	const TIER_LABELS: Record<string, string> = {
+		free: 'Free', adventurer: 'Adventurer', hero: 'Hero', champion: 'Champion', legend: 'Legend',
+		owner: 'Owner', moderator: 'Moderator'
+	};
+
+	let showPricing = $state(false);
+	let billingBusy = $state<string | null>(null); // tier id or 'portal' while redirecting
+	let billingError = $state('');
+	let billingNotice = $state(''); // feedback from the ?billing= redirect
+
+	// Owner + moderators play comped; don't pitch them plans.
+	let isComped = $derived(authUser?.role === 'owner' || authUser?.role === 'moderator');
+
+	async function startCheckout(tier: string) {
+		billingError = '';
+		billingBusy = tier;
+		try {
+			const res = await fetch('/api/billing/checkout', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ tier })
+			});
+			const data = await res.json();
+			if (!res.ok || !data.url) {
+				billingError = data.error || 'Could not start checkout.';
+				billingBusy = null;
+				return;
+			}
+			window.location.href = data.url; // off to Stripe Checkout
+		} catch {
+			billingError = 'Connection lost. Try again.';
+			billingBusy = null;
+		}
+	}
+
+	async function openBillingPortal() {
+		billingError = '';
+		billingBusy = 'portal';
+		try {
+			const res = await fetch('/api/billing/portal', { method: 'POST' });
+			const data = await res.json();
+			if (!res.ok || !data.url) {
+				billingError = data.error || 'Could not open billing.';
+				billingBusy = null;
+				return;
+			}
+			window.location.href = data.url; // off to Stripe customer portal
+		} catch {
+			billingError = 'Connection lost. Try again.';
+			billingBusy = null;
+		}
+	}
 
 	let character = $state<Character | null>(null);
 	let messages = $state<GameLogEntry[]>([]);
@@ -646,7 +715,15 @@
 			const data = await res.json();
 			appendEntries(data.entries);
 
-			if (!res.ok) {
+			if (res.status === 402 && data.code === 'action_cap_reached') {
+				// Out of moves for the month — surface it in the log and pop pricing.
+				appendEntry({
+					timestamp: new Date().toISOString(),
+					type: 'system',
+					text: data.error || "You're out of moves for this month. Upgrade for more."
+				});
+				showPricing = true;
+			} else if (!res.ok) {
 				appendEntry({
 					timestamp: new Date().toISOString(),
 					type: 'system',
@@ -856,6 +933,15 @@
 		}
 		if (params.has('auth')) history.replaceState(null, '', location.pathname);
 
+		// Stripe Checkout bounces back here with ?billing=success|cancel.
+		const billing = params.get('billing');
+		if (billing === 'success') {
+			billingNotice = 'Payment received — your plan is updating. Give it a few seconds, then reload if it still shows the old tier.';
+		} else if (billing === 'cancel') {
+			billingNotice = 'Checkout canceled — no charge made.';
+		}
+		if (params.has('billing')) history.replaceState(null, '', location.pathname);
+
 		let me: { user: AuthUser | null };
 		try {
 			me = await (await fetch('/api/auth/me')).json();
@@ -918,6 +1004,8 @@
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- NAME ENTRY SCREEN                                          -->
 <!-- ═══════════════════════════════════════════════════════════ -->
+
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape' && showPricing) showPricing = false; }} />
 
 {#if phase === 'login'}
 <div class="join-screen">
@@ -984,6 +1072,28 @@
 			<h1 class="title">INFILTRATION</h1>
 			<p class="subtitle">Signed in as {authUser?.email ?? playerName}</p>
 			<div class="title-rule"></div>
+		</div>
+
+		{#if billingNotice}
+			<div class="billing-notice">{billingNotice}</div>
+		{/if}
+
+		<div class="account-bar">
+			<span class="account-plan">
+				Plan: <strong>{TIER_LABELS[authUser?.tier ?? 'free'] ?? authUser?.tier}</strong>
+				{#if authUser?.subscription_status && authUser.subscription_status !== 'active'}
+					<span class="account-substatus">({authUser.subscription_status})</span>
+				{/if}
+			</span>
+			{#if isComped}
+				<span class="account-comped">Comped — play on us</span>
+			{:else if authUser?.tier && authUser.tier !== 'free'}
+				<button class="account-link" onclick={openBillingPortal} disabled={billingBusy === 'portal'}>
+					{billingBusy === 'portal' ? 'Opening…' : 'Manage billing'}
+				</button>
+			{:else}
+				<button class="account-link" onclick={() => (showPricing = true)}>Upgrade</button>
+			{/if}
 		</div>
 
 		<div class="join-form">
@@ -1696,6 +1806,64 @@
 <!-- SESSION SUMMARY OVERLAY                                    -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- PRICING / UPGRADE MODAL                                    -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+{#if showPricing}
+<div
+	class="pricing-overlay"
+	role="presentation"
+	onclick={(e) => { if (e.target === e.currentTarget) showPricing = false; }}
+>
+	<div class="pricing-container">
+		<button class="pricing-close" onclick={() => (showPricing = false)} aria-label="Close">×</button>
+		<h1 class="pricing-title">CHOOSE YOUR PLAN</h1>
+		<p class="pricing-sub">
+			You're on <strong>{TIER_LABELS[authUser?.tier ?? 'free']}</strong>. Upgrade for more moves each
+			month, a smarter Director, and unlimited romance.
+		</p>
+
+		{#if billingError}
+			<div class="error-msg">{billingError}</div>
+		{/if}
+
+		<div class="pricing-grid">
+			{#each PLANS as plan}
+				{@const current = authUser?.tier === plan.tier}
+				<div class="plan-card" class:current>
+					<div class="plan-name">{plan.label}</div>
+					<div class="plan-price">${plan.price}<span class="plan-per">/mo</span></div>
+					<ul class="plan-perks">
+						<li>{plan.moves}</li>
+						<li>{plan.director}</li>
+						<li>{plan.perk}</li>
+					</ul>
+					{#if current}
+						<button class="plan-button" disabled>Current plan</button>
+					{:else}
+						<button
+							class="plan-button"
+							onclick={() => startCheckout(plan.tier)}
+							disabled={billingBusy !== null}
+						>
+							{billingBusy === plan.tier ? 'Redirecting…' : `Get ${plan.label}`}
+						</button>
+					{/if}
+				</div>
+			{/each}
+		</div>
+
+		{#if authUser?.tier && authUser.tier !== 'free' && !isComped}
+			<button class="pricing-portal" onclick={openBillingPortal} disabled={billingBusy === 'portal'}>
+				{billingBusy === 'portal' ? 'Opening…' : 'Manage or cancel current subscription'}
+			</button>
+		{/if}
+		<p class="pricing-fineprint">Secure checkout via Stripe. Cancel anytime.</p>
+	</div>
+</div>
+{/if}
+
 {#if showSessionSummary && character}
 <div class="session-overlay">
 	<div class="session-container">
@@ -2156,6 +2324,252 @@
 	.session-cancel:hover {
 		border-color: #888;
 		color: #aaa;
+	}
+
+	/* ═══════════════════════════════════════════════════════ */
+	/* ACCOUNT BAR + BILLING NOTICE (select screen)          */
+	/* ═══════════════════════════════════════════════════════ */
+
+	.billing-notice {
+		border: 1px solid var(--green-dark);
+		background: rgba(0, 40, 0, 0.25);
+		color: var(--green);
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		padding: 0.75rem 1rem;
+		margin-bottom: 1.25rem;
+		text-align: center;
+	}
+
+	.account-bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		flex-wrap: wrap;
+		border: 1px solid var(--green-dark);
+		padding: 0.6rem 1rem;
+		margin-bottom: 1.5rem;
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		color: var(--green-dim);
+	}
+
+	.account-plan strong {
+		color: var(--green);
+	}
+
+	.account-substatus {
+		color: var(--amber);
+	}
+
+	.account-comped {
+		color: var(--amber);
+		letter-spacing: 0.05em;
+	}
+
+	.account-link {
+		background: transparent;
+		border: 1px solid var(--amber);
+		color: var(--amber);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		padding: 0.35rem 1rem;
+		cursor: pointer;
+		letter-spacing: 0.08em;
+		transition: all 0.2s;
+	}
+
+	.account-link:hover:not(:disabled) {
+		background: var(--amber);
+		color: #0a0a0a;
+	}
+
+	.account-link:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+
+	/* ═══════════════════════════════════════════════════════ */
+	/* PRICING MODAL                                          */
+	/* ═══════════════════════════════════════════════════════ */
+
+	.pricing-overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.85);
+		display: flex;
+		justify-content: center;
+		align-items: flex-start;
+		padding: 2rem;
+		overflow-y: auto;
+		z-index: 100;
+	}
+
+	.pricing-container {
+		position: relative;
+		max-width: 920px;
+		width: 100%;
+		margin: auto;
+		background: radial-gradient(ellipse at top, #0d1a0d 0%, #0a0a0a 70%);
+		border: 1px solid var(--green-dark);
+		padding: 2.5rem 2rem 2rem;
+	}
+
+	.pricing-close {
+		position: absolute;
+		top: 0.5rem;
+		right: 0.75rem;
+		background: transparent;
+		border: none;
+		color: var(--green-dim);
+		font-size: 1.8rem;
+		line-height: 1;
+		cursor: pointer;
+	}
+
+	.pricing-close:hover {
+		color: var(--green);
+	}
+
+	.pricing-title {
+		font-family: var(--font-display);
+		font-size: 1.8rem;
+		letter-spacing: 0.25em;
+		color: var(--green);
+		text-align: center;
+		text-shadow: 0 0 20px var(--green-glow);
+		margin: 0 0 0.5rem;
+	}
+
+	.pricing-sub {
+		text-align: center;
+		color: var(--green-dim);
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		margin: 0 0 1.75rem;
+	}
+
+	.pricing-sub strong {
+		color: var(--amber);
+	}
+
+	.pricing-grid {
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
+		gap: 1rem;
+	}
+
+	.plan-card {
+		border: 1px solid var(--green-dark);
+		padding: 1.25rem 1rem;
+		display: flex;
+		flex-direction: column;
+		text-align: center;
+	}
+
+	.plan-card.current {
+		border-color: var(--amber);
+		box-shadow: 0 0 12px rgba(255, 176, 0, 0.15);
+	}
+
+	.plan-name {
+		font-family: var(--font-display);
+		letter-spacing: 0.15em;
+		color: var(--green);
+		font-size: 1.1rem;
+		margin-bottom: 0.5rem;
+	}
+
+	.plan-price {
+		font-family: var(--font-mono);
+		font-size: 2rem;
+		color: var(--amber);
+		margin-bottom: 1rem;
+	}
+
+	.plan-per {
+		font-size: 0.85rem;
+		color: var(--green-dim);
+	}
+
+	.plan-perks {
+		list-style: none;
+		padding: 0;
+		margin: 0 0 1.25rem;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		color: var(--green-dim);
+		flex: 1;
+	}
+
+	.plan-perks li {
+		padding: 0.3rem 0;
+		border-bottom: 1px solid rgba(0, 80, 0, 0.25);
+	}
+
+	.plan-button {
+		background: transparent;
+		border: 1px solid var(--amber);
+		color: var(--amber);
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		padding: 0.6rem 0.5rem;
+		cursor: pointer;
+		letter-spacing: 0.08em;
+		transition: all 0.2s;
+		width: 100%;
+	}
+
+	.plan-button:hover:not(:disabled) {
+		background: var(--amber);
+		color: #0a0a0a;
+	}
+
+	.plan-button:disabled {
+		opacity: 0.45;
+		cursor: default;
+		border-color: var(--green-dark);
+		color: var(--green-dim);
+	}
+
+	.pricing-portal {
+		display: block;
+		margin: 1.5rem auto 0;
+		background: transparent;
+		border: 1px solid #444;
+		color: #888;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		padding: 0.5rem 1.5rem;
+		cursor: pointer;
+		letter-spacing: 0.05em;
+	}
+
+	.pricing-portal:hover:not(:disabled) {
+		border-color: #888;
+		color: #ccc;
+	}
+
+	.pricing-fineprint {
+		text-align: center;
+		color: var(--green-dim);
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		margin: 1rem 0 0;
+		opacity: 0.7;
+	}
+
+	@media (max-width: 768px) {
+		.pricing-grid {
+			grid-template-columns: 1fr 1fr;
+		}
+	}
+
+	@media (max-width: 460px) {
+		.pricing-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	/* ═══════════════════════════════════════════════════════ */
