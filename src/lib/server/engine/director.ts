@@ -3145,6 +3145,7 @@ async function processRomanceAction(
 			const entry: GameLogEntry = {
 				timestamp: new Date().toISOString(),
 				type: 'narration',
+				targetPlayer: character.id,
 				text: npcName + ' smiles but the moment feels uncertain. (Local model unavailable — is Ollama running?)'
 			};
 			addLogEntry(entry);
@@ -3157,6 +3158,7 @@ async function processRomanceAction(
 		const entry: GameLogEntry = {
 			timestamp: new Date().toISOString(),
 			type: 'narration',
+			targetPlayer: character.id,
 			text
 		};
 		addLogEntry(entry);
@@ -3166,6 +3168,7 @@ async function processRomanceAction(
 		const entry: GameLogEntry = {
 			timestamp: new Date().toISOString(),
 			type: 'narration',
+			targetPlayer: character.id,
 			text: npcName + ' pauses, distracted. (Connection to local model failed.)'
 		};
 		addLogEntry(entry);
