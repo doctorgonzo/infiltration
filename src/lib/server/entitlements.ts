@@ -48,11 +48,11 @@ function isElevated(role: string): boolean {
 	return role === 'owner' || role === 'moderator';
 }
 
-type UserRow = { id: string; role: string; tier: string };
+type UserRow = { id: string; role: string; tier: string; romance_turns_used: number };
 
 function getUserRow(userId: string): UserRow | null {
 	const row = getDb()
-		.prepare('SELECT id, role, tier FROM users WHERE id = ?')
+		.prepare('SELECT id, role, tier, romance_turns_used FROM users WHERE id = ?')
 		.get(userId) as UserRow | undefined;
 	return row ?? null;
 }
@@ -137,4 +137,38 @@ export function recordAction(
 			   cost_usd     = cost_usd + excluded.cost_usd`
 		)
 		.run(userId, period, tokensIn, tokensOut, costUsd);
+}
+
+// ── Romance teaser gate ────────────────────────────────────
+// Free tier gets a handful of romance turns (lifetime, not monthly) as a
+// tease; any paid tier — plus owner/moderators — unlocks it fully.
+export type RomanceAccess = {
+	unlocked: boolean; // true == no limit
+	used: number;
+	cap: number; // Infinity when unlocked
+	remaining: number; // Infinity when unlocked
+};
+
+export function romanceAccess(userId: string | null): RomanceAccess {
+	const row = userId ? getUserRow(userId) : null;
+	// Elevated accounts (owner + comped moderators) are always unlocked.
+	if (row && isElevated(row.role)) {
+		return { unlocked: true, used: row.romance_turns_used, cap: Infinity, remaining: Infinity };
+	}
+	const tier = tierFor(row);
+	const cap = TIERS[tier].romanceTurns;
+	const used = row?.romance_turns_used ?? 0;
+	if (cap === Infinity) {
+		return { unlocked: true, used, cap: Infinity, remaining: Infinity };
+	}
+	return { unlocked: false, used, cap, remaining: Math.max(0, cap - used) };
+}
+
+// Consume one teaser turn. No-op for unlocked accounts (paid/owner/mod) so
+// their counter never moves — the teaser only meters the free tier.
+export function recordRomanceTurn(userId: string | null): void {
+	if (!userId) return;
+	const access = romanceAccess(userId);
+	if (access.unlocked) return;
+	getDb().prepare('UPDATE users SET romance_turns_used = romance_turns_used + 1 WHERE id = ?').run(userId);
 }

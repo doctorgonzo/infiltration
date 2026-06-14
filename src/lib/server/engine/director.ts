@@ -11,7 +11,8 @@ import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC, Item } from '$lib/types';
 import { syncAdvancement } from '$lib/progression';
-import { resolveModelForCharacter, type NarrationModel } from '$lib/server/entitlements';
+import { resolveModelForCharacter, romanceAccess, recordRomanceTurn, type NarrationModel } from '$lib/server/entitlements';
+import { getCharacterOwner } from '$lib/server/ownership';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -1710,6 +1711,13 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 
 			const displayName = input.npc_name || state.npcs[input.npc_id]?.name || input.npc_id.replace(/_/g, ' ');
 
+			// Teaser gate: free tier runs out of romance turns. Tell the Director to
+			// keep it in-fiction rather than dropping a paywall mid-scene.
+			const romanceGate = romanceAccess(getCharacterOwner(char.id));
+			if (!romanceGate.unlocked && romanceGate.remaining <= 0) {
+				return JSON.stringify({ error: `Romance is a premium feature and this player's free teaser (${romanceGate.used}/${romanceGate.cap}) is spent. Do NOT enter romance mode. Acknowledge the spark in-fiction but let the moment pass — they must upgrade to a paid tier to continue romances.` });
+			}
+
 			// Pre-check: can we actually reach the romance model?
 			// Don't trap the player in romance mode if Ollama is unreachable.
 			if (!(await isOllamaReachable())) {
@@ -2124,6 +2132,41 @@ function formatPlayerInput(name: string, raw: string): string {
 	return parts.join('. ');
 }
 
+// ── Romance teaser gate ──────────────────────────────────
+// Free tier gets a limited number of romance turns; paid/owner/mod unlock it.
+// Returns locked-notice entries (and drops out of romance mode) when the
+// teaser is spent, else null to let the scene proceed.
+function romanceTeaserLock(ownerId: string | null, character: Character, playerId: string): GameLogEntry[] | null {
+	const access = romanceAccess(ownerId);
+	if (access.unlocked || access.remaining > 0) return null;
+	if (character.romanceMode) {
+		character.romanceMode = false;
+		delete character.romanceNpc;
+		delete character.romanceContext;
+		saveState();
+	}
+	return [{
+		timestamp: new Date().toISOString(),
+		type: 'system',
+		targetPlayer: playerId,
+		text: `💔 That's as far as the free romance teaser goes (${access.used}/${access.cap} turns used). Upgrade to any paid tier to unlock romance fully.`
+	}];
+}
+
+// Run one romance turn through the local engine, metering the free-tier teaser.
+async function runRomanceTurn(
+	ownerId: string | null,
+	character: Character,
+	action: string,
+	state: GameState,
+	playerId: string
+): Promise<GameLogEntry[]> {
+	const lock = romanceTeaserLock(ownerId, character, playerId);
+	if (lock) return lock;
+	recordRomanceTurn(ownerId); // consumes one teaser turn (no-op for unlocked)
+	return processRomanceAction(character, action, state);
+}
+
 export async function processAction(
 	playerId: string,
 	action: string
@@ -2137,6 +2180,8 @@ export async function processAction(
 
 	// Tier → narration model, resolved once per action from the character's owner.
 	const narrationModel = resolveModelForCharacter(playerId);
+	// Owning account — drives the romance teaser gate (free tier is capped).
+	const ownerId = getCharacterOwner(playerId);
 
 	// ── World is over — freeze all action ──
 	// Win or loss is global (one shared Madison). Once the breach is closed or
@@ -2366,6 +2411,10 @@ export async function processAction(
 			}];
 		}
 
+		// Teaser gate — free tier runs out of romance turns.
+		const startLock = romanceTeaserLock(ownerId, character, playerId);
+		if (startLock) return startLock;
+
 		if (!(await isOllamaReachable())) {
 			return [{
 				timestamp: new Date().toISOString(),
@@ -2584,6 +2633,9 @@ export async function processAction(
 				const ollamaUp = await isOllamaReachable();
 
 				if (ollamaUp) {
+					// Teaser gate before auto-starting — don't open a scene they can't have.
+					const lock = romanceTeaserLock(ownerId, character, playerId);
+					if (lock) return lock;
 					character.romanceMode = true;
 					character.romanceNpc = nearbyNpc.name;
 					character.romanceContext = `${nearbyNpc.name} — ${nearbyNpc.description}`;
@@ -2596,7 +2648,7 @@ export async function processAction(
 						text: `[ROMANCE STARTED] ${character.name} and ${nearbyNpc.name}`
 					});
 					console.log(`[director]   💋 AUTO-ROMANCE: explicit action detected, routing to romance engine (${nearbyNpc.name})`);
-					return processRomanceAction(character, action, state);
+					return runRomanceTurn(ownerId, character, action, state, playerId);
 				}
 			}
 		}
@@ -2616,7 +2668,7 @@ export async function processAction(
 				text: `The private scene with ${npcName} fades; the live Director takes over again.`
 			});
 		} else {
-			return processRomanceAction(character, action, state);
+			return runRomanceTurn(ownerId, character, action, state, playerId);
 		}
 	}
 
