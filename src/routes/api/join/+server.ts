@@ -11,20 +11,12 @@ import { ITEMS } from '$lib/server/world/madison';
 import type { Character, AbilityScores, PlayerSession, AbilityName, Skill } from '$lib/types';
 import { CLASS_KEY_ABILITY, CLASS_HIT_DIE } from '$lib/types';
 import type { HeroClass } from '$lib/types';
+import { HERO_CLASS_SKILLS, ALL_SKILLS, applyFeatBonuses, skillPointsForLevel, maxSkillRank, isClassSkill } from '$lib/progression';
 
 const VALID_CLASSES: HeroClass[] = [
 	'Strong Hero', 'Fast Hero', 'Tough Hero',
 	'Smart Hero', 'Dedicated Hero', 'Charismatic Hero'
 ];
-
-const CLASS_SKILLS: Record<HeroClass, Skill[]> = {
-	'Strong Hero': ['Climb', 'Intimidate', 'Jump', 'Swim'],
-	'Fast Hero': ['Balance', 'Drive', 'Escape Artist', 'Hide', 'Move Silently', 'Tumble'],
-	'Tough Hero': ['Climb', 'Concentration', 'Intimidate', 'Survival'],
-	'Smart Hero': ['Computer Use', 'Disable Device', 'Investigate', 'Knowledge (Technology)', 'Repair', 'Research'],
-	'Dedicated Hero': ['Concentration', 'Gather Information', 'Listen', 'Sense Motive', 'Spot', 'Treat Injury'],
-	'Charismatic Hero': ['Bluff', 'Diplomacy', 'Disguise', 'Gather Information', 'Intimidate', 'Perform']
-};
 
 const CLASS_STARTING_GEAR: Record<HeroClass, string[]> = {
 	'Strong Hero': ['baseball_bat', 'leather_jacket', 'first_aid_kit'],
@@ -101,54 +93,40 @@ export const POST: RequestHandler = async ({ request }) => {
 		? ['Simple Weapons Proficiency', ...body.feats]
 		: ['Simple Weapons Proficiency', CLASS_STARTING_FEAT[heroClass as HeroClass]];
 
-	// ── Apply feat bonuses ─────────────────────────────────
-	let hpBonus = 0;
-	let acBonus = 0;
-	let initBonus = 0;
-
-	for (const feat of feats) {
-		switch (feat) {
-			case 'Toughness':
-				hpBonus += 3;
-				break;
-			case 'Dodge':
-				acBonus += 1;
-				break;
-			case 'Improved Initiative':
-				initBonus += 4;
-				break;
-			// Power Attack, Cleave, Mobility — combat-time choices, not static bonuses
-		}
-	}
-
-	const maxHp = Math.max(1, hitDie + conMod + hpBonus);
-
-	// ── Skills (class skills at rank 2 + feat bonuses) ────
+	// ── Skills ─────────────────────────────────────────────
+	// Custom characters allocate their level-1 skill pool ((class base + INT)×4)
+	// in the creation Skills step; quick-start templates get the auto class kit.
 	const skills: Partial<Record<Skill, number>> = {};
-	for (const skill of CLASS_SKILLS[heroClass as HeroClass] ?? []) {
-		skills[skill] = 2;
-	}
-
-	// Feat-based skill bonuses
-	for (const feat of feats) {
-		switch (feat) {
-			case 'Alertness':
-				skills['Listen'] = (skills['Listen'] ?? 0) + 2;
-				skills['Spot'] = (skills['Spot'] ?? 0) + 2;
-				break;
-			case 'Educated':
-				skills['Knowledge (Technology)'] = (skills['Knowledge (Technology)'] ?? 0) + 2;
-				skills['Research'] = (skills['Research'] ?? 0) + 2;
-				break;
-			case 'Trustworthy':
-				skills['Diplomacy'] = (skills['Diplomacy'] ?? 0) + 2;
-				skills['Gather Information'] = (skills['Gather Information'] ?? 0) + 2;
-				break;
+	const heroClassTyped = heroClass as HeroClass;
+	if (body.skillRanks && typeof body.skillRanks === 'object') {
+		const pool = skillPointsForLevel(heroClassTyped, abilities.INT, true);
+		let spent = 0;
+		for (const [skill, rawRank] of Object.entries(body.skillRanks)) {
+			if (!ALL_SKILLS.includes(skill as Skill)) continue;
+			const rank = Math.max(0, Math.floor(Number(rawRank) || 0));
+			const cap = maxSkillRank(1, isClassSkill(heroClassTyped, skill as Skill));
+			if (rank > cap) {
+				return json({ error: `${skill} can't exceed rank ${cap} at level 1.` }, { status: 400 });
+			}
+			if (rank > 0) {
+				skills[skill as Skill] = rank;
+				spent += rank;
+			}
+		}
+		if (spent > pool) {
+			return json({ error: `Too many skill ranks: spent ${spent}, you have ${pool}.` }, { status: 400 });
+		}
+	} else {
+		// Template / fallback: class skills at rank 2.
+		for (const skill of HERO_CLASS_SKILLS[heroClassTyped] ?? []) {
+			skills[skill] = 2;
 		}
 	}
+
+	const maxHp = Math.max(1, hitDie + conMod);
 
 	// ── Starting Gear ──────────────────────────────────────
-	const gearIds = CLASS_STARTING_GEAR[heroClass as HeroClass] ?? [];
+	const gearIds = CLASS_STARTING_GEAR[heroClassTyped] ?? [];
 	const inventory = gearIds.map(id => ({ ...ITEMS[id] })).filter(Boolean);
 
 	// ── Create Character ───────────────────────────────────
@@ -158,17 +136,18 @@ export const POST: RequestHandler = async ({ request }) => {
 		id: playerId,
 		name: characterName,
 		playerName,
-		class: heroClass as HeroClass,
+		class: heroClassTyped,
 		level: 1,
 		xp: 0,
 		abilities,
 		hp: maxHp,
 		maxHp,
-		ac: 10 + dexMod + acBonus + (inventory.find(i => i.type === 'armor')?.acBonus ?? 0),
-		initiative: dexMod + initBonus,
+		ac: 10 + dexMod + (inventory.find(i => i.type === 'armor')?.acBonus ?? 0),
+		initiative: dexMod,
 		speed: 30,
 		skills,
 		feats,
+		advancementResolvedThrough: 1,
 		inventory,
 		equippedWeapon: inventory.find(i => i.type === 'weapon')?.id,
 		equippedArmor: inventory.find(i => i.type === 'armor')?.id,
@@ -194,6 +173,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			actionsPerformed: 0
 		}
 	};
+
+	// Apply static feat bonuses (Toughness HP, Dodge AC, Improved Init, skill feats).
+	for (const feat of feats) applyFeatBonuses(character, feat);
+	character.hp = character.maxHp;
 
 	addCharacter(character);
 

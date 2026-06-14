@@ -5,7 +5,8 @@
 
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getState, getCharacter, getActivePlayerCount, touchCharacter, decayInebriation } from '$lib/server/engine/state';
+import { getState, getCharacter, getActivePlayerCount, touchCharacter, decayInebriation, saveState } from '$lib/server/engine/state';
+import { syncAdvancement } from '$lib/progression';
 
 export const GET: RequestHandler = async ({ url }) => {
 	const playerId = url.searchParams.get('playerId');
@@ -18,6 +19,10 @@ export const GET: RequestHandler = async ({ url }) => {
 	if (playerId && character) {
 		decayInebriation(character);
 		touchCharacter(playerId);
+		// Backfill leveling: characters created before the d20 advancement system
+		// (or who leveled via the old auto-only path) get their owed feats/ability
+		// points/skill ranks computed here on load. Idempotent.
+		if (syncAdvancement(character)) saveState();
 	}
 
 	// Public location info (only discovered locations)

@@ -10,6 +10,7 @@ import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActi
 import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC, Item } from '$lib/types';
+import { syncAdvancement } from '$lib/progression';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -1330,17 +1331,19 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			const oldLevel = char.level;
 			const newLevel = Math.floor(char.xp / 1000) + 1;
 			if (newLevel > char.level) {
-				char.level = newLevel;
-				// HP increase on level up
+				// HP increase per level gained (handles multi-level jumps)
 				const conMod = Math.floor((char.abilities.CON - 10) / 2);
 				const hitDie = { 'Strong Hero': 8, 'Fast Hero': 8, 'Tough Hero': 10, 'Smart Hero': 6, 'Dedicated Hero': 6, 'Charismatic Hero': 6 }[char.class] ?? 6;
-				const hpGain = Math.max(1, Math.floor(hitDie / 2) + 1 + conMod);
+				const hpGain = Math.max(1, Math.floor(hitDie / 2) + 1 + conMod) * (newLevel - char.level);
+				char.level = newLevel;
 				char.maxHp += hpGain;
 				char.hp += hpGain;
+				// Accrue feats / ability points / skill points into the pending pool.
+				syncAdvancement(char);
 				addLogEntry({
 					timestamp: new Date().toISOString(),
 					type: 'system',
-					text: `🔥 LEVEL UP! 🔥 ${char.name} has reached Level ${newLevel}! +${hpGain} HP (${char.hp}/${char.maxHp})`
+					text: `🔥 LEVEL UP! 🔥 ${char.name} has reached Level ${newLevel}! +${hpGain} HP (${char.hp}/${char.maxHp}). Open ADVANCEMENT to spend your new feats, ability points, and skill ranks.`
 				});
 			}
 			saveState();

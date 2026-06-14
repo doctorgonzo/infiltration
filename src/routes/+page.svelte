@@ -1,6 +1,10 @@
 <script lang="ts">
-	import type { Character, GameLogEntry } from '$lib/types';
+	import type { Character, GameLogEntry, HeroClass, AbilityName, Skill } from '$lib/types';
 	import { onMount } from 'svelte';
+	import {
+		GENERAL_FEATS, CLASS_BONUS_FEATS, ALL_SKILLS,
+		isClassSkill, maxSkillRank, skillPointsForLevel, hasPendingAdvancement
+	} from '$lib/progression';
 
 	// ── State ──────────────────────────────────────────────
 	type Phase = 'name' | 'select' | 'create' | 'play' | 'dead';
@@ -80,7 +84,7 @@
 	let isJoining = $state(false);
 
 	// ── Stat Rolling & Feat Selection ─────────────────────
-	type CreationStep = 'basics' | 'stats' | 'feats';
+	type CreationStep = 'basics' | 'stats' | 'skills' | 'feats';
 	let creationStep = $state<CreationStep>('basics');
 	let useTemplate = $state(true); // true = auto-assign stats from class, false = 4d6 roll
 
@@ -134,95 +138,116 @@
 		Object.values(rolledStats).every(s => s.locked)
 	);
 
-	// ── Feats ─────────────────────────────────────────────
-	interface FeatOption {
-		name: string;
-		desc: string;
-		prereq?: string;
+	// ── Skills (creation allocation) ──────────────────────
+	let allocatedSkills = $state<Record<string, number>>({});
+	let skillPool = $derived(
+		skillPointsForLevel(selectedClass as HeroClass, rolledStats.INT.total || 10, true)
+	);
+	let skillSpent = $derived(
+		Object.values(allocatedSkills).reduce((a, b) => a + b, 0)
+	);
+	let skillRemaining = $derived(skillPool - skillSpent);
+
+	function creationSkillCap(skill: string): number {
+		return maxSkillRank(1, isClassSkill(selectedClass as HeroClass, skill as Skill));
+	}
+	function bumpSkill(skill: string, delta: number) {
+		const cur = allocatedSkills[skill] ?? 0;
+		const next = cur + delta;
+		if (next < 0) return;
+		if (delta > 0 && (skillRemaining <= 0 || next > creationSkillCap(skill))) return;
+		allocatedSkills = { ...allocatedSkills, [skill]: next };
 	}
 
-	const GENERAL_FEATS: FeatOption[] = [
-		{ name: 'Alertness', desc: '+2 Listen and Spot checks' },
-		{ name: 'Brawl', desc: '+1 unarmed attack, 1d6 unarmed damage' },
-		{ name: 'Cautious', desc: '+2 Demolitions and Disable Device' },
-		{ name: 'Combat Martial Arts', desc: '+1 unarmed, 1d4 lethal unarmed damage', prereq: 'BAB +1' },
-		{ name: 'Confident', desc: '+2 Gamble and Intimidate' },
-		{ name: 'Creative', desc: '+2 Craft and Perform' },
-		{ name: 'Deceptive', desc: '+2 Bluff and Disguise' },
-		{ name: 'Dodge', desc: '+1 dodge bonus to AC vs. chosen target' },
-		{ name: 'Educated', desc: '+2 to any two Knowledge skills' },
-		{ name: 'Endurance', desc: '+4 on extended physical activity checks' },
-		{ name: 'Focused', desc: '+2 to any two skills of your choice' },
-		{ name: 'Great Fortitude', desc: '+2 Fortitude saves' },
-		{ name: 'Guide', desc: '+2 Navigate and Survival' },
-		{ name: 'Improved Initiative', desc: '+4 Initiative rolls' },
-		{ name: 'Iron Will', desc: '+2 Will saves' },
-		{ name: 'Lightning Reflexes', desc: '+2 Reflex saves' },
-		{ name: 'Low Profile', desc: '+2 Hide, less likely to be recognized' },
-		{ name: 'Meticulous', desc: '+2 Investigate and Search' },
-		{ name: 'Nimble', desc: '+2 Escape Artist and Sleight of Hand' },
-		{ name: 'Point Blank Shot', desc: '+1 attack and damage within 30 ft.' },
-		{ name: 'Power Attack', desc: 'Trade attack bonus for melee damage' },
-		{ name: 'Stealthy', desc: '+2 Hide and Move Silently' },
-		{ name: 'Studious', desc: '+2 Decipher Script and Research' },
-		{ name: 'Toughness', desc: '+3 hit points' },
-		{ name: 'Trustworthy', desc: '+2 Diplomacy and Gather Information' }
-	];
-
-	const CLASS_BONUS_FEATS: Record<string, FeatOption[]> = {
-		'Strong Hero': [
-			{ name: 'Animal Affinity', desc: '+2 Handle Animal and Ride' },
-			{ name: 'Archaic Weapons Proficiency', desc: 'No penalty with swords, axes, etc.' },
-			{ name: 'Brawl', desc: '+1 unarmed attack, 1d6 unarmed damage' },
-			{ name: 'Cleave', desc: 'Extra melee attack after dropping a foe', prereq: 'Power Attack' },
-			{ name: 'Combat Reflexes', desc: 'Additional attacks of opportunity' },
-			{ name: 'Great Cleave', desc: 'Unlimited cleave attacks per round', prereq: 'Cleave' },
-			{ name: 'Improved Brawl', desc: '+2 unarmed, 1d8 unarmed damage', prereq: 'Brawl' },
-			{ name: 'Power Attack', desc: 'Trade attack bonus for melee damage' }
-		],
-		'Fast Hero': [
-			{ name: 'Combat Reflexes', desc: 'Additional attacks of opportunity' },
-			{ name: 'Dodge', desc: '+1 dodge bonus to AC vs. chosen target' },
-			{ name: 'Double Tap', desc: '+1 damage with firearms at close range', prereq: 'Point Blank Shot' },
-			{ name: 'Mobility', desc: '+4 AC vs. attacks of opportunity from movement', prereq: 'Dodge' },
-			{ name: 'Point Blank Shot', desc: '+1 attack and damage within 30 ft.' },
-			{ name: 'Stealthy', desc: '+2 Hide and Move Silently' }
-		],
-		'Tough Hero': [
-			{ name: 'Alertness', desc: '+2 Listen and Spot checks' },
-			{ name: 'Brawl', desc: '+1 unarmed attack, 1d6 unarmed damage' },
-			{ name: 'Endurance', desc: '+4 on extended physical activity checks' },
-			{ name: 'Great Fortitude', desc: '+2 Fortitude saves' },
-			{ name: 'Improved Damage Threshold', desc: '+3 massive damage threshold' },
-			{ name: 'Toughness', desc: '+3 hit points' }
-		],
-		'Smart Hero': [
-			{ name: 'Cautious', desc: '+2 Demolitions and Disable Device' },
-			{ name: 'Educated', desc: '+2 to any two Knowledge skills' },
-			{ name: 'Meticulous', desc: '+2 Investigate and Search' },
-			{ name: 'Studious', desc: '+2 Decipher Script and Research' },
-			{ name: 'Vehicle Expert', desc: '+2 Drive and Pilot' }
-		],
-		'Dedicated Hero': [
-			{ name: 'Alertness', desc: '+2 Listen and Spot checks' },
-			{ name: 'Attentive', desc: '+2 Investigate and Sense Motive' },
-			{ name: 'Educated', desc: '+2 to any two Knowledge skills' },
-			{ name: 'Focused', desc: '+2 to any two skills of your choice' },
-			{ name: 'Iron Will', desc: '+2 Will saves' },
-			{ name: 'Studious', desc: '+2 Decipher Script and Research' }
-		],
-		'Charismatic Hero': [
-			{ name: 'Confident', desc: '+2 Gamble and Intimidate' },
-			{ name: 'Creative', desc: '+2 Craft and Perform' },
-			{ name: 'Deceptive', desc: '+2 Bluff and Disguise' },
-			{ name: 'Dodge', desc: '+1 dodge bonus to AC vs. chosen target' },
-			{ name: 'Trustworthy', desc: '+2 Diplomacy and Gather Information' },
-			{ name: 'Windfall', desc: 'Start with extra wealth' }
-		]
-	};
-
+	// ── Feats ─────────────────────────────────────────────
 	let selectedGeneralFeat = $state<string>('');
 	let selectedBonusFeat = $state<string>('');
+
+	// ── Level-up advancement ──────────────────────────────
+	let showAdvancement = $state(false);
+	let advGeneralFeats = $state<string[]>([]);
+	let advClassFeats = $state<string[]>([]);
+	let advAbilities = $state<Record<string, number>>({});
+	let advSkills = $state<Record<string, number>>({});
+	let advError = $state('');
+	let advSubmitting = $state(false);
+
+	let pendingAdv = $derived(character?.pendingAdvancement ?? null);
+	let hasPending = $derived(hasPendingAdvancement(pendingAdv));
+	let advAbilitySpent = $derived(Object.values(advAbilities).reduce((a, b) => a + b, 0));
+	let advSkillSpent = $derived(Object.values(advSkills).reduce((a, b) => a + b, 0));
+
+	const ADV_ABILITIES: AbilityName[] = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA'];
+
+	let advGeneralPool = $derived(
+		GENERAL_FEATS.filter(f => !(character?.feats ?? []).includes(f.name))
+	);
+	let advClassPool = $derived(
+		(CLASS_BONUS_FEATS[(character?.class ?? 'Strong Hero') as HeroClass] ?? [])
+			.filter(f => !(character?.feats ?? []).includes(f.name))
+	);
+
+	function openAdvancement() {
+		advGeneralFeats = [];
+		advClassFeats = [];
+		advAbilities = {};
+		advSkills = {};
+		advError = '';
+		showAdvancement = true;
+	}
+	function advSkillCap(skill: string): number {
+		const lvl = character?.level ?? 1;
+		return maxSkillRank(lvl, isClassSkill((character?.class ?? 'Strong Hero') as HeroClass, skill as Skill));
+	}
+	function toggleAdvFeat(kind: 'general' | 'class', name: string, max: number) {
+		const arr = kind === 'general' ? advGeneralFeats : advClassFeats;
+		if (arr.includes(name)) {
+			const next = arr.filter(f => f !== name);
+			if (kind === 'general') advGeneralFeats = next; else advClassFeats = next;
+		} else if (arr.length < max) {
+			if (kind === 'general') advGeneralFeats = [...arr, name];
+			else advClassFeats = [...arr, name];
+		}
+	}
+	function bumpAdvAbility(ab: string, delta: number, max: number) {
+		const next = (advAbilities[ab] ?? 0) + delta;
+		if (next < 0) return;
+		if (delta > 0 && advAbilitySpent >= max) return;
+		advAbilities = { ...advAbilities, [ab]: next };
+	}
+	function bumpAdvSkill(skill: string, delta: number, max: number) {
+		const next = (advSkills[skill] ?? 0) + delta;
+		if (next < 0) return;
+		const curRank = character?.skills?.[skill as Skill] ?? 0;
+		if (delta > 0 && (advSkillSpent >= max || curRank + next > advSkillCap(skill))) return;
+		advSkills = { ...advSkills, [skill]: next };
+	}
+	async function submitAdvancement() {
+		if (!pendingAdv || !playerId) return;
+		if (advGeneralFeats.length !== pendingAdv.generalFeats) { advError = `Pick ${pendingAdv.generalFeats} general feat(s).`; return; }
+		if (advClassFeats.length !== pendingAdv.classFeats) { advError = `Pick ${pendingAdv.classFeats} class feat(s).`; return; }
+		if (advAbilitySpent !== pendingAdv.abilityPoints) { advError = `Assign ${pendingAdv.abilityPoints} ability point(s).`; return; }
+		if (advSkillSpent !== pendingAdv.skillPoints) { advError = `Spend ${pendingAdv.skillPoints} skill point(s) (${pendingAdv.skillPoints - advSkillSpent} left).`; return; }
+		advSubmitting = true;
+		advError = '';
+		const abilityIncreases: string[] = [];
+		for (const [ab, n] of Object.entries(advAbilities)) for (let i = 0; i < n; i++) abilityIncreases.push(ab);
+		try {
+			const res = await fetch('/api/advance', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ playerId, generalFeats: advGeneralFeats, classFeats: advClassFeats, abilityIncreases, skillRanks: advSkills })
+			});
+			const data = await res.json();
+			if (!res.ok) { advError = data.error || 'Advancement failed.'; return; }
+			character = data.character;
+			showAdvancement = false;
+		} catch {
+			advError = 'Network error. Try again.';
+		} finally {
+			advSubmitting = false;
+		}
+	}
 
 	// ── Slash Commands ────────────────────────────────────
 	interface SlashCommand {
@@ -253,17 +278,6 @@
 		{ command: '/party leave', label: 'Leave Party', description: 'Leave your current party', category: 'info' },
 		{ command: '/party disband', label: 'Disband', description: 'Disband party (leader only)', category: 'info' },
 		{ command: '/party kick', label: 'Kick', description: 'Remove a player from party', category: 'info' },
-	];
-
-	const ALL_SKILLS = [
-		'Balance', 'Bluff', 'Climb', 'Computer Use', 'Concentration', 'Craft',
-		'Demolitions', 'Diplomacy', 'Disable Device', 'Disguise', 'Drive',
-		'Escape Artist', 'Forgery', 'Gamble', 'Gather Information', 'Handle Animal',
-		'Hide', 'Intimidate', 'Investigate', 'Jump', 'Knowledge (Arcane)',
-		'Knowledge (Current Events)', 'Knowledge (Streetwise)', 'Knowledge (Technology)',
-		'Listen', 'Move Silently', 'Navigate', 'Perception', 'Perform', 'Pilot',
-		'Profession', 'Repair', 'Research', 'Search', 'Sense Motive',
-		'Sleight of Hand', 'Spot', 'Survival', 'Swim', 'Treat Injury', 'Tumble'
 	];
 
 	function skillToCommand(skill: string): string {
@@ -501,6 +515,15 @@
 				return;
 			}
 			joinError = '';
+			creationStep = 'skills';
+		} else if (creationStep === 'skills') {
+			if (skillRemaining !== 0) {
+				joinError = skillRemaining > 0
+					? `Spend all your skill points (${skillRemaining} left).`
+					: 'You\'ve over-spent your skill points.';
+				return;
+			}
+			joinError = '';
 			creationStep = 'feats';
 		} else if (creationStep === 'feats') {
 			createCharacter();
@@ -538,6 +561,7 @@
 					characterName: characterName.trim(),
 					heroClass: selectedClass,
 					...(abilities ? { abilities } : {}),
+					...(!useTemplate ? { skillRanks: allocatedSkills } : {}),
 					feats: [selectedGeneralFeat, selectedBonusFeat]
 				})
 			});
@@ -988,9 +1012,11 @@
 				<span class="step" class:active={creationStep === 'basics'} class:done={creationStep !== 'basics'}>1. BASICS</span>
 				<span class="step-arrow">></span>
 				{#if !useTemplate}
-					<span class="step" class:active={creationStep === 'stats'} class:done={creationStep === 'feats'}>2. STATS</span>
+					<span class="step" class:active={creationStep === 'stats'} class:done={creationStep === 'skills' || creationStep === 'feats'}>2. STATS</span>
 					<span class="step-arrow">></span>
-					<span class="step" class:active={creationStep === 'feats'}>3. FEATS</span>
+					<span class="step" class:active={creationStep === 'skills'} class:done={creationStep === 'feats'}>3. SKILLS</span>
+					<span class="step-arrow">></span>
+					<span class="step" class:active={creationStep === 'feats'}>4. FEATS</span>
 				{:else}
 					<span class="step" class:active={creationStep === 'feats'}>2. FEATS</span>
 				{/if}
@@ -1092,7 +1118,33 @@
 				</div>
 			</div>
 
-		<!-- ── STEP 3: CHOOSE FEATS ── -->
+		<!-- ── STEP 3: ALLOCATE SKILLS ── -->
+		{:else if creationStep === 'skills'}
+			<div class="form-group">
+				<label>
+					ALLOCATE SKILL RANKS
+					<span class="label-sub">{skillRemaining} of {skillPool} points left · class skills max rank 4, others max 2</span>
+				</label>
+				<div class="skill-alloc-list">
+					{#each ALL_SKILLS as skill}
+						{@const rank = allocatedSkills[skill] ?? 0}
+						{@const cap = creationSkillCap(skill)}
+						{@const classSkill = isClassSkill(selectedClass as HeroClass, skill)}
+						<div class="skill-alloc-row" class:class-skill={classSkill}>
+							<span class="skill-alloc-name">
+								{skill}{#if classSkill}<span class="skill-alloc-tag">class</span>{/if}
+							</span>
+							<div class="skill-alloc-controls">
+								<button class="skill-step-btn" disabled={rank <= 0} onclick={() => bumpSkill(skill, -1)}>−</button>
+								<span class="skill-alloc-rank" class:has-rank={rank > 0}>{rank}</span>
+								<button class="skill-step-btn" disabled={rank >= cap || skillRemaining <= 0} onclick={() => bumpSkill(skill, 1)}>+</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</div>
+
+		<!-- ── STEP 4: CHOOSE FEATS ── -->
 		{:else if creationStep === 'feats'}
 			<div class="form-group">
 				<label>GENERAL FEAT <span class="label-sub">pick one</span></label>
@@ -1113,7 +1165,7 @@
 			<div class="form-group">
 				<label>{selectedClass.toUpperCase()} BONUS FEAT <span class="label-sub">pick one</span></label>
 				<div class="feat-list">
-					{#each (CLASS_BONUS_FEATS[selectedClass] ?? []) as feat}
+					{#each (CLASS_BONUS_FEATS[selectedClass as HeroClass] ?? []) as feat}
 						<button
 							class="feat-card"
 							class:selected={selectedBonusFeat === feat.name}
@@ -1151,7 +1203,8 @@
 			{#if creationStep !== 'basics'}
 				<button class="switch-player-button" onclick={() => {
 					if (creationStep === 'stats') creationStep = 'basics';
-					else if (creationStep === 'feats') creationStep = useTemplate ? 'basics' : 'stats';
+					else if (creationStep === 'skills') creationStep = 'stats';
+					else if (creationStep === 'feats') creationStep = useTemplate ? 'basics' : 'skills';
 					joinError = '';
 				}}>
 					BACK
@@ -1331,6 +1384,9 @@
 							<div class="xp-fill" style="width: {Math.min(100, Math.max(0, ((character.xp - (character.level - 1) * 1000) / 1000) * 100))}%"></div>
 						</div>
 					</div>
+					{#if hasPending}
+						<button class="levelup-cta" onclick={openAdvancement}>⭐ LEVEL UP — spend your advancement</button>
+					{/if}
 				</div>
 
 				<!-- Party Info -->
@@ -1696,6 +1752,118 @@
 		<div class="levelup-label">LEVEL UP</div>
 		<div class="levelup-number">{levelUpNumber}</div>
 		<div class="levelup-subtitle">Click to dismiss</div>
+	</div>
+</div>
+{/if}
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ADVANCEMENT (LEVEL-UP) MODAL                                -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+{#if showAdvancement && character && pendingAdv}
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="adv-overlay" onclick={() => (showAdvancement = false)}>
+	<div class="adv-modal" onclick={(e) => e.stopPropagation()}>
+		<h2 class="adv-title">⭐ ADVANCEMENT</h2>
+		<p class="adv-sub">
+			{character.name} · {character.class} L{character.level}
+			· levels {pendingAdv.fromLevel}–{pendingAdv.toLevel}
+		</p>
+
+		{#if pendingAdv.abilityPoints > 0}
+			<div class="adv-section">
+				<h3 class="adv-section-title">
+					ABILITY INCREASES
+					<span class="adv-count" class:done={advAbilitySpent === pendingAdv.abilityPoints}>{advAbilitySpent}/{pendingAdv.abilityPoints}</span>
+				</h3>
+				<div class="adv-ability-grid">
+					{#each ADV_ABILITIES as ab}
+						{@const add = advAbilities[ab] ?? 0}
+						<div class="adv-ability" class:boosted={add > 0}>
+							<span class="adv-ability-name">{ab}</span>
+							<span class="adv-ability-val">{character.abilities[ab]}{#if add > 0}<span class="adv-plus">+{add}</span>{/if}</span>
+							<div class="adv-ability-ctrls">
+								<button class="skill-step-btn" disabled={add <= 0} onclick={() => bumpAdvAbility(ab, -1, pendingAdv?.abilityPoints ?? 0)}>−</button>
+								<button class="skill-step-btn" disabled={advAbilitySpent >= pendingAdv.abilityPoints} onclick={() => bumpAdvAbility(ab, 1, pendingAdv?.abilityPoints ?? 0)}>+</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		{#if pendingAdv.generalFeats > 0}
+			<div class="adv-section">
+				<h3 class="adv-section-title">
+					GENERAL FEATS
+					<span class="adv-count" class:done={advGeneralFeats.length === pendingAdv.generalFeats}>{advGeneralFeats.length}/{pendingAdv.generalFeats}</span>
+				</h3>
+				<div class="feat-list">
+					{#each advGeneralPool as feat}
+						<button class="feat-card" class:selected={advGeneralFeats.includes(feat.name)}
+							onclick={() => toggleAdvFeat('general', feat.name, pendingAdv?.generalFeats ?? 0)}>
+							<span class="feat-name">{feat.name}</span>
+							<span class="feat-desc">{feat.desc}</span>
+							{#if feat.prereq}<span class="feat-prereq">Requires: {feat.prereq}</span>{/if}
+						</button>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		{#if pendingAdv.classFeats > 0}
+			<div class="adv-section">
+				<h3 class="adv-section-title">
+					{character.class.toUpperCase()} BONUS FEATS
+					<span class="adv-count" class:done={advClassFeats.length === pendingAdv.classFeats}>{advClassFeats.length}/{pendingAdv.classFeats}</span>
+				</h3>
+				<div class="feat-list">
+					{#each advClassPool as feat}
+						<button class="feat-card" class:selected={advClassFeats.includes(feat.name)}
+							onclick={() => toggleAdvFeat('class', feat.name, pendingAdv?.classFeats ?? 0)}>
+							<span class="feat-name">{feat.name}</span>
+							<span class="feat-desc">{feat.desc}</span>
+							{#if feat.prereq}<span class="feat-prereq">Requires: {feat.prereq}</span>{/if}
+						</button>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		{#if pendingAdv.skillPoints > 0}
+			<div class="adv-section">
+				<h3 class="adv-section-title">
+					SKILL RANKS
+					<span class="adv-count" class:done={advSkillSpent === pendingAdv.skillPoints}>{advSkillSpent}/{pendingAdv.skillPoints}</span>
+				</h3>
+				<div class="skill-alloc-list">
+					{#each ALL_SKILLS as skill}
+						{@const add = advSkills[skill] ?? 0}
+						{@const curRank = character.skills?.[skill] ?? 0}
+						{@const cap = advSkillCap(skill)}
+						{@const classSkill = isClassSkill(character.class, skill)}
+						<div class="skill-alloc-row" class:class-skill={classSkill}>
+							<span class="skill-alloc-name">
+								{skill}{#if classSkill}<span class="skill-alloc-tag">class</span>{/if}
+							</span>
+							<div class="skill-alloc-controls">
+								<button class="skill-step-btn" disabled={add <= 0} onclick={() => bumpAdvSkill(skill, -1, pendingAdv?.skillPoints ?? 0)}>−</button>
+								<span class="skill-alloc-rank" class:has-rank={curRank + add > 0}>{curRank + add}{#if add > 0}<span class="adv-plus">+{add}</span>{/if}</span>
+								<button class="skill-step-btn" disabled={curRank + add >= cap || advSkillSpent >= pendingAdv.skillPoints} onclick={() => bumpAdvSkill(skill, 1, pendingAdv?.skillPoints ?? 0)}>+</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		{#if advError}<div class="error-msg">{advError}</div>{/if}
+		<div class="adv-actions">
+			<button class="join-button" disabled={advSubmitting} onclick={submitAdvancement}>
+				{advSubmitting ? 'APPLYING…' : 'CONFIRM ADVANCEMENT'}
+			</button>
+			<button class="switch-player-button" onclick={() => (showAdvancement = false)}>LATER</button>
+		</div>
 	</div>
 </div>
 {/if}
@@ -3712,5 +3880,217 @@
 			transform: translateY(-110vh) translateX(calc((var(--i) - 10) * 5px)) scale(0.3);
 			opacity: 0;
 		}
+	}
+
+	/* ── Skill allocation (creation + advancement) ── */
+	.skill-alloc-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		max-height: 20rem;
+		overflow-y: auto;
+		padding-right: 0.25rem;
+	}
+	.skill-alloc-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+		padding: 0.3rem 0.5rem;
+		background: var(--bg-input);
+		border: 1px solid var(--green-dark);
+		border-radius: 2px;
+	}
+	.skill-alloc-row.class-skill {
+		border-color: var(--green-dim);
+	}
+	.skill-alloc-name {
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		color: var(--green-dim);
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.skill-alloc-tag {
+		font-size: 0.6rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--bg);
+		background: var(--green-dim);
+		padding: 0.05rem 0.3rem;
+		border-radius: 2px;
+	}
+	.skill-alloc-controls {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.skill-step-btn {
+		width: 1.6rem;
+		height: 1.6rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: var(--bg-panel);
+		border: 1px solid var(--green-dark);
+		color: var(--green);
+		font-family: var(--font-mono);
+		font-size: 1rem;
+		line-height: 1;
+		cursor: pointer;
+		border-radius: 2px;
+		transition: all 0.12s;
+	}
+	.skill-step-btn:hover:not(:disabled) {
+		border-color: var(--green);
+		box-shadow: 0 0 6px var(--green-glow);
+	}
+	.skill-step-btn:disabled {
+		opacity: 0.3;
+		cursor: not-allowed;
+	}
+	.skill-alloc-rank {
+		min-width: 2.4rem;
+		text-align: center;
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		color: var(--gray);
+	}
+	.skill-alloc-rank.has-rank {
+		color: var(--green);
+	}
+	.adv-plus {
+		color: var(--amber);
+		font-size: 0.7rem;
+		margin-left: 0.15rem;
+	}
+
+	/* ── Level-up CTA in the sidebar header ── */
+	.levelup-cta {
+		display: block;
+		width: 100%;
+		margin-top: 0.6rem;
+		padding: 0.5rem;
+		background: rgba(255, 176, 0, 0.12);
+		border: 1px solid var(--amber);
+		color: var(--amber);
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		font-weight: 600;
+		letter-spacing: 0.03em;
+		cursor: pointer;
+		border-radius: 2px;
+		text-align: center;
+		animation: levelup-cta-pulse 1.8s ease-in-out infinite;
+	}
+	.levelup-cta:hover {
+		background: rgba(255, 176, 0, 0.22);
+		box-shadow: 0 0 12px rgba(255, 176, 0, 0.4);
+	}
+	@keyframes levelup-cta-pulse {
+		0%, 100% { box-shadow: 0 0 4px rgba(255, 176, 0, 0.2); }
+		50% { box-shadow: 0 0 14px rgba(255, 176, 0, 0.5); }
+	}
+
+	/* ── Advancement modal ── */
+	.adv-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 200;
+		background: rgba(0, 0, 0, 0.85);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 1rem;
+		backdrop-filter: blur(2px);
+	}
+	.adv-modal {
+		width: 100%;
+		max-width: 40rem;
+		max-height: 90vh;
+		overflow-y: auto;
+		background: var(--bg-panel);
+		border: 1px solid var(--amber-dim);
+		border-radius: 4px;
+		padding: 1.25rem 1.5rem 1.5rem;
+		box-shadow: 0 0 30px rgba(255, 176, 0, 0.25);
+	}
+	.adv-title {
+		font-family: var(--font-display);
+		color: var(--amber);
+		font-size: 1.4rem;
+		text-align: center;
+		margin: 0;
+		text-shadow: 0 0 14px rgba(255, 176, 0, 0.5);
+	}
+	.adv-sub {
+		text-align: center;
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		color: var(--green-dim);
+		margin: 0.25rem 0 1rem;
+	}
+	.adv-section {
+		margin-bottom: 1.1rem;
+	}
+	.adv-section-title {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		letter-spacing: 0.05em;
+		color: var(--green);
+		border-bottom: 1px solid var(--green-dark);
+		padding-bottom: 0.3rem;
+		margin: 0 0 0.5rem;
+	}
+	.adv-count {
+		font-size: 0.75rem;
+		color: var(--amber);
+		font-weight: 600;
+	}
+	.adv-count.done {
+		color: var(--green);
+	}
+	.adv-ability-grid {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 0.5rem;
+	}
+	.adv-ability {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.3rem;
+		padding: 0.5rem;
+		background: var(--bg-input);
+		border: 1px solid var(--green-dark);
+		border-radius: 2px;
+	}
+	.adv-ability.boosted {
+		border-color: var(--amber);
+	}
+	.adv-ability-name {
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		color: var(--green-dim);
+		letter-spacing: 0.05em;
+	}
+	.adv-ability-val {
+		font-family: var(--font-mono);
+		font-size: 1.1rem;
+		color: var(--green);
+	}
+	.adv-ability-ctrls {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.adv-actions {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		margin-top: 0.5rem;
 	}
 </style>

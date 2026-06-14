@@ -114,9 +114,21 @@ export interface Character {
 	romanceNpc?: string;      // NPC id or name for active romance
 	romanceContext?: string;  // scene context from the Director
 	partyId?: string;         // party id if in a group
+	// ── d20 Leveling ──────────────────────────────────
+	advancementResolvedThrough?: number;        // highest level whose grants are accounted for (undefined → 1)
+	pendingAdvancement?: PendingAdvancement;     // unspent feats/abilities/skill points from leveling
 	// ── Lifetime Stats ────────────────────────────────
 	createdAt: string;        // ISO timestamp
 	stats: CharacterStats;
+}
+
+export interface PendingAdvancement {
+	generalFeats: number;     // general feats owed
+	classFeats: number;       // class bonus feats owed
+	abilityPoints: number;    // +1 ability-score increases owed
+	skillPoints: number;      // skill ranks owed
+	fromLevel: number;        // first unresolved level (display)
+	toLevel: number;          // current level (display)
 }
 
 export interface CharacterStats {
