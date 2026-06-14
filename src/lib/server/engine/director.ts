@@ -86,14 +86,17 @@ async function callCloudDirector(req: DirectorRequest): Promise<NormalizedRespon
 			'anthropic-beta': 'prompt-caching-2024-07-31'
 		},
 		body: JSON.stringify({
-			// Sonnet for primary narration + tool decisions, Haiku for enforcement rounds.
-			model: enforcementMode ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
+			// Opus 4.6 (medium effort) for primary narration + tool decisions, Haiku for enforcement rounds.
+			model: enforcementMode ? 'claude-haiku-4-5-20251001' : 'claude-opus-4-6',
 			max_tokens: 1024,
 			temperature: 0.8,
 			system,
 			messages,
 			tools,
-			...(enforcementMode ? { tool_choice: { type: 'any' as const } } : {})
+			// effort is GA on Opus 4.6 but ERRORS on Haiku 4.5 — only send it on the narration call.
+			...(enforcementMode
+				? { tool_choice: { type: 'any' as const } }
+				: { output_config: { effort: 'medium' as const } })
 		})
 	});
 	if (!response.ok) {
