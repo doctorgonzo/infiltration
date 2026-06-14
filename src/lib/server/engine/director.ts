@@ -1841,6 +1841,7 @@ const STATIC_RULES: string = [
 	'',
 	'NEVER BREAK CHARACTER: No confirmation prompts, no "are you sure?", no numbered option lists. Player acts, you narrate consequences.',
 	'',
+	'INPUT CONVENTION: In a PLAYER ACTION, plain text is the character SPEAKING aloud (dialogue), and anything the player wrapped in *asterisks* is a physical action or stage direction they are performing. Treat them accordingly — never read an action as speech or speech as an action.',
 	'NEVER ACT FOR THE PLAYER: You control the world, they control their character.',
 	'- No player dialogue, thoughts, feelings, or invented physical actions.',
 	'- If they say "walk to State Street," describe State Street — don\'t add "you shove your hands in your pockets."',
@@ -2083,6 +2084,35 @@ function buildDynamicState(state: GameState, actingPlayerId?: string): { slow: s
 
 // Stashed so tool handlers can validate player intent (e.g. did they actually order a drink?)
 let _lastPlayerAction = '';
+
+// Player input convention: plain text is spoken dialogue, text wrapped in
+// *asterisks* is a physical action/stage direction. Splits the raw input into
+// ordered segments and frames each one explicitly so the Director never reads an
+// action as speech (or vice-versa). Slash commands are handled earlier and never
+// reach this point.
+function formatPlayerInput(name: string, raw: string): string {
+	const text = raw.trim();
+	if (!/\*[^*]+\*/.test(text)) {
+		// No asterisks at all — the whole thing is dialogue.
+		return `${name} says: "${text}"`;
+	}
+	const segments = text
+		.split(/(\*[^*]+\*)/g)
+		.map((s) => s.trim())
+		.filter(Boolean);
+	const parts: string[] = [];
+	for (const seg of segments) {
+		const action = seg.match(/^\*(.+)\*$/);
+		if (action) {
+			parts.push(`${name} ${action[1].trim()}`);
+		} else {
+			// Strip any stray wrapping quotes so we don't double them up.
+			const dialogue = seg.replace(/^["']+|["']+$/g, '').trim();
+			if (dialogue) parts.push(`${name} says: "${dialogue}"`);
+		}
+	}
+	return parts.join('. ');
+}
 
 export async function processAction(
 	playerId: string,
@@ -2681,7 +2711,7 @@ ${sameLocation.length > 0
 Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Christmas lights, sticky floor, Tom Waits or Hank Williams on the jukebox — as the one door on the block that doesn't make their skin crawl. Then hand control back to the player. Keep it taut and ominous; do not over-explain the conspiracy.`;
 	}
 
-	const userMessage = `${charContext}\n${locContext}${partyContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${character.name} says: "${action}"${arrivalDirective}${skillCheckDirective}${moneyDirective}`;
+	const userMessage = `${charContext}\n${locContext}${partyContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${formatPlayerInput(character.name, action)}${arrivalDirective}${skillCheckDirective}${moneyDirective}`;
 
 	// Call Claude
 	const entries: GameLogEntry[] = [];
