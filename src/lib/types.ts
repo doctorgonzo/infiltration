@@ -105,6 +105,7 @@ export interface Character {
 	notes: string[];          // character-specific notes/flags
 	alive: boolean;
 	lastActive?: string;      // ISO timestamp — characters fade after 60s of inactivity
+	isAdmin?: boolean;        // unlocked via /admin <secret> — gates the cheat menu
 	godMode?: boolean;        // /admin toggle — 1000 HP, always nat 20
 	originalMaxHp?: number;   // stash real maxHp when godMode activates
 	inebriation: number;      // 0-10 drunk/high scale

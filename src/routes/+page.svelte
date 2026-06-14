@@ -244,7 +244,6 @@
 		{ command: '/pickup', label: 'Pick Up', description: 'Grab an item', category: 'action' },
 		{ command: '/inventory', label: 'Inventory', description: 'Check your inventory', category: 'info' },
 		{ command: '/stats', label: 'Stats', description: 'View character sheet', category: 'info' },
-		{ command: '/admin', label: 'Admin', description: 'Toggle god mode (1000 HP, always nat 20)', category: 'info' },
 		{ command: '/start', label: 'Start Scene', description: 'Enter romance mode', category: 'info' },
 		{ command: '/end', label: 'End Scene', description: 'Exit romance mode', category: 'info' },
 		{ command: '/party', label: 'Party', description: 'Show party info', category: 'info' },
@@ -275,6 +274,22 @@
 
 	let allCommands = $derived.by(() => {
 		const cmds: SlashCommand[] = [...BASE_COMMANDS];
+		// Cheat menu — only listed once unlocked via /admin <secret>. The commands
+		// still work server-side regardless; this just controls visibility.
+		if (character?.isAdmin) {
+			cmds.push(
+				{ command: '/admin', label: 'God Mode', description: 'Toggle god mode (1000 HP, always nat 20)', category: 'info' },
+				{ command: '/cheat', label: 'Cheat Menu', description: 'List all cheats, locations, and item ids', category: 'info' },
+				{ command: '/cheat money ', label: 'Give Money', description: 'Add/remove cash: /cheat money <amount>', category: 'info' },
+				{ command: '/cheat item ', label: 'Give Item', description: 'Spawn item: /cheat item <id> [qty]', category: 'info' },
+				{ command: '/cheat tp ', label: 'Teleport', description: 'Jump anywhere: /cheat tp <locationId>', category: 'info' },
+				{ command: '/cheat hp ', label: 'Set HP', description: 'Set current HP: /cheat hp <n>', category: 'info' },
+				{ command: '/cheat xp ', label: 'Set XP', description: 'Set total XP: /cheat xp <n>', category: 'info' },
+				{ command: '/cheat level ', label: 'Set Level', description: 'Set level: /cheat level <n>', category: 'info' },
+				{ command: '/cheat heal', label: 'Full Heal', description: 'Restore HP + clear conditions', category: 'info' },
+				{ command: '/admin lock', label: 'Lock Cheats', description: 'Disable admin and re-lock the menu', category: 'info' }
+			);
+		}
 		if (character) {
 			for (const skill of ALL_SKILLS) {
 				const rank = (character.skills as Record<string, number>)[skill] ?? 0;

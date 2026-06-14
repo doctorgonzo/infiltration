@@ -9,7 +9,7 @@
 import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive, isEntryVisibleTo, createParty, getPlayerParty, inviteToParty, joinParty, leaveParty, disbandParty, getPartyMembers, findPendingInvite, getCharacter, decayInebriation } from './state';
 import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
-import type { GameLogEntry, Character, GameState, EncounterEntry, NPC } from '$lib/types';
+import type { GameLogEntry, Character, GameState, EncounterEntry, NPC, Item } from '$lib/types';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -2145,8 +2145,52 @@ export async function processAction(
 	decayInebriation(character);
 
 
-	// ── /admin toggle ────────────────────────────────
-	if (action.trim().toLowerCase() === '/admin') {
+	// ── /admin — secret-gated unlock + god mode toggle ──
+	// `/admin <secret>` unlocks the cheat menu (sets isAdmin, persisted on the
+	// character). Bare `/admin` toggles god mode but ONLY for an unlocked admin.
+	// `/admin lock` revokes. The secret lives in the ADMIN_SECRET env var and
+	// never reaches the client, so IP/device changes don't lock you out.
+	const adminMatch = trimmedAction.match(/^\/admin(?:\s+([\s\S]+))?$/i);
+	if (adminMatch) {
+		const arg = (adminMatch[1] ?? '').trim();
+		const sysMsg = (text: string): GameLogEntry[] => [{
+			timestamp: new Date().toISOString(), type: 'system', targetPlayer: playerId, text
+		}];
+
+		// Unlock attempt: /admin <secret>
+		if (arg && arg.toLowerCase() !== 'lock') {
+			const secret = envVar('ADMIN_SECRET');
+			if (!secret) {
+				console.warn('[admin] ADMIN_SECRET is not set — unlock is impossible until you set it.');
+				return sysMsg('⛔ Access denied.');
+			}
+			if (arg === secret) {
+				character.isAdmin = true;
+				saveState();
+				return sysMsg('🔓 Admin unlocked. Bare /admin toggles god mode, /cheat opens the cheat menu, /admin lock re-locks.');
+			}
+			return sysMsg('⛔ Access denied.');
+		}
+
+		// Everything below requires an already-unlocked admin.
+		if (!character.isAdmin) {
+			return sysMsg('⛔ Access denied.');
+		}
+
+		// /admin lock — revoke admin (and drop god mode if on).
+		if (arg.toLowerCase() === 'lock') {
+			if (character.godMode) {
+				character.hp = Math.min(character.hp, character.originalMaxHp ?? 10);
+				character.maxHp = character.originalMaxHp ?? 10;
+				character.godMode = false;
+				delete character.originalMaxHp;
+			}
+			character.isAdmin = false;
+			saveState();
+			return sysMsg('🔒 Admin locked. Cheats disabled.');
+		}
+
+		// Bare /admin — toggle god mode.
 		if (character.godMode) {
 			// Deactivate
 			character.hp = Math.min(character.hp, character.originalMaxHp ?? 10);
@@ -2154,11 +2198,7 @@ export async function processAction(
 			character.godMode = false;
 			delete character.originalMaxHp;
 			saveState();
-			return [{
-				timestamp: new Date().toISOString(),
-				type: 'system',
-				text: '🔒 God mode OFF. HP restored to ' + character.hp + '/' + character.maxHp + '. Dice rolls normalized.'
-			}];
+			return sysMsg('🔒 God mode OFF. HP restored to ' + character.hp + '/' + character.maxHp + '. Dice rolls normalized.');
 		} else {
 			// Activate
 			character.originalMaxHp = character.maxHp;
@@ -2167,11 +2207,103 @@ export async function processAction(
 			character.godMode = true;
 			character.alive = true;
 			saveState();
-			return [{
-				timestamp: new Date().toISOString(),
-				type: 'system',
-				text: '⚡ God mode ON. HP set to 1000. All rolls are nat 20. Type /admin again to disable.'
-			}];
+			return sysMsg('⚡ God mode ON. HP set to 1000. All rolls are nat 20. Type /admin again to disable.');
+		}
+	}
+
+	// ── /cheat — admin-only cheat menu ───────────────
+	const cheatMatch = trimmedAction.match(/^\/cheat(?:\s+([\s\S]+))?$/i);
+	if (cheatMatch) {
+		const sysMsg = (text: string): GameLogEntry[] => [{
+			timestamp: new Date().toISOString(), type: 'system', targetPlayer: playerId, text
+		}];
+		if (!character.isAdmin) {
+			return sysMsg('⛔ Access denied.');
+		}
+		const rest = (cheatMatch[1] ?? '').trim();
+		const parts = rest.length ? rest.split(/\s+/) : [];
+		const sub = (parts[0] ?? '').toLowerCase();
+		const argStr = parts.slice(1).join(' ');
+
+		switch (sub) {
+			case '':
+			case 'help': {
+				const locs = Object.keys(state.locations).join(', ');
+				const items = Object.keys(ITEMS).join(', ');
+				return sysMsg(
+					'🛠️ CHEAT MENU\n' +
+					'/cheat money <amount> — add/remove cash (negative to remove)\n' +
+					'/cheat item <id> [qty] — spawn item into inventory\n' +
+					'/cheat tp <locationId> — teleport anywhere (ignores connections)\n' +
+					'/cheat hp <n> — set current HP\n' +
+					'/cheat xp <n> — set total XP (recalcs level)\n' +
+					'/cheat level <n> — set level\n' +
+					'/cheat heal — full heal + clear conditions\n\n' +
+					'LOCATIONS: ' + locs + '\n\n' +
+					'ITEMS: ' + items
+				);
+			}
+			case 'money': {
+				const amt = parseInt(argStr, 10);
+				if (isNaN(amt)) return sysMsg('Usage: /cheat money <amount> (negative to remove)');
+				character.wealth = Math.max(0, character.wealth + amt);
+				saveState();
+				return sysMsg(`💰 Wealth ${amt >= 0 ? '+' : ''}${amt}. Now $${character.wealth}.`);
+			}
+			case 'item': {
+				const id = parts[1] ?? '';
+				const qty = Math.max(1, parseInt(parts[2] ?? '1', 10) || 1);
+				let item: Item | undefined = ITEMS[id];
+				if (!item) {
+					item = Object.values(ITEMS).find(i => i.name.toLowerCase() === argStr.toLowerCase());
+				}
+				if (!item) return sysMsg(`No item "${id}". Type /cheat for the item id list.`);
+				for (let i = 0; i < qty; i++) character.inventory.push({ ...item });
+				saveState();
+				return sysMsg(`🎁 Added ${qty}× ${item.name}.`);
+			}
+			case 'tp': {
+				const dest = state.locations[argStr];
+				if (!dest) return sysMsg(`No location "${argStr}". Type /cheat for the location list.`);
+				character.location = argStr;
+				dest.discovered = true;
+				saveState();
+				return sysMsg(`🌀 Teleported to ${dest.name}.`);
+			}
+			case 'hp': {
+				const n = parseInt(argStr, 10);
+				if (isNaN(n) || n < 1) return sysMsg('Usage: /cheat hp <n>');
+				if (n > character.maxHp) character.maxHp = n;
+				character.hp = n;
+				character.alive = true;
+				saveState();
+				return sysMsg(`❤️ HP set to ${character.hp}/${character.maxHp}.`);
+			}
+			case 'xp': {
+				const n = parseInt(argStr, 10);
+				if (isNaN(n) || n < 0) return sysMsg('Usage: /cheat xp <n>');
+				character.xp = n;
+				character.level = Math.floor(n / 1000) + 1;
+				saveState();
+				return sysMsg(`✨ XP set to ${n} (Level ${character.level}).`);
+			}
+			case 'level': {
+				const n = parseInt(argStr, 10);
+				if (isNaN(n) || n < 1) return sysMsg('Usage: /cheat level <n>');
+				character.level = n;
+				character.xp = Math.max(character.xp, (n - 1) * 1000);
+				saveState();
+				return sysMsg(`⭐ Level set to ${n} (XP ${character.xp}).`);
+			}
+			case 'heal': {
+				character.hp = character.maxHp;
+				character.conditions = [];
+				character.alive = true;
+				saveState();
+				return sysMsg(`💚 Full heal. ${character.hp}/${character.maxHp}, conditions cleared.`);
+			}
+			default:
+				return sysMsg(`Unknown cheat "${sub}". Type /cheat for the menu.`);
 		}
 	}
 
