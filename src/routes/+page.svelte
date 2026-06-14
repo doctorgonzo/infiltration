@@ -88,6 +88,90 @@
 		}
 	}
 
+	// ── Moderator management (owner only) ─────────────────
+	// Owner-only panel over /api/admin/grant: list elevated accounts, comp a
+	// friend to moderator, or knock them back to a regular user.
+	interface ModAccount { email: string; role: string; tier: string; }
+	let showModPanel = $state(false);
+	let modAccounts = $state<ModAccount[]>([]);
+	let modLoading = $state(false);
+	let modEmail = $state('');
+	let modBusy = $state(false); // a grant/revoke is in flight
+	let modActingOn = $state<string | null>(null); // email currently being revoked
+	let modError = $state('');
+	let modNotice = $state('');
+
+	async function loadModAccounts() {
+		modLoading = true;
+		modError = '';
+		try {
+			const res = await fetch('/api/admin/grant');
+			const data = await res.json();
+			if (!res.ok) { modError = data.error || 'Could not load accounts.'; return; }
+			modAccounts = data.accounts ?? [];
+		} catch {
+			modError = 'Connection lost.';
+		} finally {
+			modLoading = false;
+		}
+	}
+
+	function openModPanel() {
+		showModPanel = true;
+		modError = '';
+		modNotice = '';
+		modEmail = '';
+		loadModAccounts();
+	}
+
+	async function grantMod() {
+		const email = modEmail.trim();
+		if (!email || modBusy) return;
+		modBusy = true;
+		modError = '';
+		modNotice = '';
+		try {
+			const res = await fetch('/api/admin/grant', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email, role: 'moderator' })
+			});
+			const data = await res.json();
+			if (!res.ok) { modError = data.error || 'Could not grant moderator.'; return; }
+			modNotice = `${email} is now a moderator — comped, uncapped, Sonnet 4.6.`;
+			modEmail = '';
+			await loadModAccounts();
+		} catch {
+			modError = 'Connection lost.';
+		} finally {
+			modBusy = false;
+		}
+	}
+
+	async function revokeMod(email: string) {
+		if (modBusy) return;
+		modBusy = true;
+		modActingOn = email;
+		modError = '';
+		modNotice = '';
+		try {
+			const res = await fetch('/api/admin/grant', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email, role: 'user' })
+			});
+			const data = await res.json();
+			if (!res.ok) { modError = data.error || 'Could not revoke.'; return; }
+			modNotice = `${email} is back to a regular user.`;
+			await loadModAccounts();
+		} catch {
+			modError = 'Connection lost.';
+		} finally {
+			modBusy = false;
+			modActingOn = null;
+		}
+	}
+
 	let character = $state<Character | null>(null);
 	let messages = $state<GameLogEntry[]>([]);
 	let input = $state('');
@@ -1005,7 +1089,7 @@
 <!-- NAME ENTRY SCREEN                                          -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape' && showPricing) showPricing = false; }} />
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape') { if (showPricing) showPricing = false; if (showModPanel) showModPanel = false; } }} />
 
 {#if phase === 'login'}
 <div class="join-screen">
@@ -1085,15 +1169,20 @@
 					<span class="account-substatus">({authUser.subscription_status})</span>
 				{/if}
 			</span>
-			{#if isComped}
-				<span class="account-comped">Comped — play on us</span>
-			{:else if authUser?.tier && authUser.tier !== 'free'}
-				<button class="account-link" onclick={openBillingPortal} disabled={billingBusy === 'portal'}>
-					{billingBusy === 'portal' ? 'Opening…' : 'Manage billing'}
-				</button>
-			{:else}
-				<button class="account-link" onclick={() => (showPricing = true)}>Upgrade</button>
-			{/if}
+			<div class="account-actions">
+				{#if isComped}
+					<span class="account-comped">Comped — play on us</span>
+				{:else if authUser?.tier && authUser.tier !== 'free'}
+					<button class="account-link" onclick={openBillingPortal} disabled={billingBusy === 'portal'}>
+						{billingBusy === 'portal' ? 'Opening…' : 'Manage billing'}
+					</button>
+				{:else}
+					<button class="account-link" onclick={() => (showPricing = true)}>Upgrade</button>
+				{/if}
+				{#if authUser?.role === 'owner'}
+					<button class="account-link account-link-owner" onclick={openModPanel}>⚙ Manage mods</button>
+				{/if}
+			</div>
 		</div>
 
 		{#if billingError}
@@ -1811,6 +1900,80 @@
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
+<!-- MODERATOR MANAGEMENT MODAL (owner only)                    -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+{#if showModPanel}
+<div
+	class="mod-overlay"
+	role="presentation"
+	onclick={(e) => { if (e.target === e.currentTarget) showModPanel = false; }}
+>
+	<div class="mod-container">
+		<button class="pricing-close" onclick={() => (showModPanel = false)} aria-label="Close">×</button>
+		<div class="mod-scanline"></div>
+		<h1 class="mod-title">MODERATOR ACCESS</h1>
+		<p class="mod-sub">
+			Comped accounts — uncapped play on <strong>Sonnet 4.6</strong>. They must log in once before you
+			can grant them access. Owner stays Opus; mods don't get the cheat menu.
+		</p>
+
+		<div class="mod-grant">
+			<input
+				class="mod-input"
+				type="email"
+				placeholder="buddy@example.com"
+				autocomplete="off"
+				bind:value={modEmail}
+				onkeydown={(e) => { if (e.key === 'Enter') grantMod(); }}
+				disabled={modBusy}
+			/>
+			<button class="mod-grant-btn" onclick={grantMod} disabled={modBusy || !modEmail.trim()}>
+				{modBusy && !modActingOn ? 'GRANTING…' : 'GRANT ACCESS'}
+			</button>
+		</div>
+
+		{#if modError}
+			<div class="error-msg">{modError}</div>
+		{/if}
+		{#if modNotice}
+			<div class="mod-notice">{modNotice}</div>
+		{/if}
+
+		<div class="mod-list-header">— CURRENT ACCESS —</div>
+		{#if modLoading}
+			<div class="mod-empty">Loading…</div>
+		{:else if modAccounts.length === 0}
+			<div class="mod-empty">No elevated accounts.</div>
+		{:else}
+			<ul class="mod-list">
+				{#each modAccounts as acct}
+					<li class="mod-row" class:is-owner={acct.role === 'owner'}>
+						<span class="mod-email">{acct.email}</span>
+						<span class="mod-badge mod-badge-{acct.role}">{acct.role}</span>
+						{#if acct.email === authUser?.email}
+							<span class="mod-you">that's you</span>
+						{:else if acct.role === 'owner'}
+							<span class="mod-you">owner</span>
+						{:else}
+							<button
+								class="mod-revoke"
+								onclick={() => revokeMod(acct.email)}
+								disabled={modBusy}
+								title={`Revoke ${acct.email}`}
+							>
+								{modActingOn === acct.email ? '…' : 'REVOKE'}
+							</button>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
+</div>
+{/if}
+
+<!-- ═══════════════════════════════════════════════════════════ -->
 <!-- PRICING / UPGRADE MODAL                                    -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
@@ -2372,6 +2535,23 @@
 		letter-spacing: 0.05em;
 	}
 
+	.account-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		flex-wrap: wrap;
+	}
+
+	.account-link-owner {
+		border-color: var(--green-dim);
+		color: var(--green);
+	}
+
+	.account-link-owner:hover:not(:disabled) {
+		background: var(--green);
+		color: #0a0a0a;
+	}
+
 	.account-link {
 		background: transparent;
 		border: 1px solid var(--amber);
@@ -2578,6 +2758,234 @@
 	@media (max-width: 460px) {
 		.pricing-grid {
 			grid-template-columns: 1fr;
+		}
+	}
+
+	/* ═══════════════════════════════════════════════════════ */
+	/* MODERATOR MANAGEMENT MODAL                             */
+	/* ═══════════════════════════════════════════════════════ */
+
+	.mod-overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.85);
+		display: flex;
+		justify-content: center;
+		align-items: flex-start;
+		padding: 2rem;
+		overflow-y: auto;
+		z-index: 100;
+	}
+
+	.mod-container {
+		position: relative;
+		max-width: 560px;
+		width: 100%;
+		margin: auto;
+		background: radial-gradient(ellipse at top, #0d1a0d 0%, #0a0a0a 72%);
+		border: 1px solid var(--green-dark);
+		box-shadow: 0 0 40px rgba(0, 60, 0, 0.35), inset 0 0 60px rgba(0, 40, 0, 0.25);
+		padding: 2.5rem 2rem 2rem;
+		overflow: hidden;
+	}
+
+	/* Sweeping scanline across the top — the "fancy as fuck" tax. */
+	.mod-scanline {
+		position: absolute;
+		top: 0;
+		left: -100%;
+		width: 100%;
+		height: 2px;
+		background: linear-gradient(90deg, transparent, var(--green), transparent);
+		animation: mod-sweep 3.5s linear infinite;
+		pointer-events: none;
+	}
+
+	@keyframes mod-sweep {
+		0% { left: -100%; }
+		100% { left: 100%; }
+	}
+
+	.mod-title {
+		font-family: var(--font-display);
+		font-size: 1.6rem;
+		letter-spacing: 0.25em;
+		color: var(--green);
+		text-align: center;
+		text-shadow: 0 0 18px var(--green-glow);
+		margin: 0 0 0.6rem;
+	}
+
+	.mod-sub {
+		text-align: center;
+		color: var(--green-dim);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		line-height: 1.5;
+		margin: 0 0 1.75rem;
+	}
+
+	.mod-sub strong {
+		color: var(--amber);
+	}
+
+	.mod-grant {
+		display: flex;
+		gap: 0.6rem;
+	}
+
+	.mod-input {
+		flex: 1;
+		background: rgba(0, 0, 0, 0.4);
+		border: 1px solid var(--green-dark);
+		color: var(--green);
+		font-family: var(--font-mono);
+		font-size: 0.9rem;
+		padding: 0.6rem 0.8rem;
+		outline: none;
+		transition: border-color 0.2s, box-shadow 0.2s;
+	}
+
+	.mod-input:focus {
+		border-color: var(--green-dim);
+		box-shadow: 0 0 8px var(--green-glow);
+	}
+
+	.mod-input::placeholder {
+		color: #2f5a2f;
+	}
+
+	.mod-grant-btn {
+		background: transparent;
+		border: 1px solid var(--green);
+		color: var(--green);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		letter-spacing: 0.08em;
+		padding: 0.6rem 1.1rem;
+		cursor: pointer;
+		white-space: nowrap;
+		transition: all 0.2s;
+	}
+
+	.mod-grant-btn:hover:not(:disabled) {
+		background: var(--green);
+		color: #0a0a0a;
+		box-shadow: 0 0 12px var(--green-glow);
+	}
+
+	.mod-grant-btn:disabled {
+		opacity: 0.4;
+		cursor: default;
+	}
+
+	.mod-notice {
+		border: 1px solid var(--green-dark);
+		background: rgba(0, 40, 0, 0.3);
+		color: var(--green);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		padding: 0.6rem 0.85rem;
+		margin-top: 1rem;
+		text-align: center;
+	}
+
+	.mod-list-header {
+		text-align: center;
+		color: var(--green-dim);
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		letter-spacing: 0.2em;
+		margin: 1.75rem 0 0.85rem;
+	}
+
+	.mod-empty {
+		text-align: center;
+		color: #2f5a2f;
+		font-family: var(--font-mono);
+		font-size: 0.82rem;
+		padding: 1rem 0;
+	}
+
+	.mod-list {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.mod-row {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		border: 1px solid var(--green-dark);
+		padding: 0.55rem 0.85rem;
+		font-family: var(--font-mono);
+	}
+
+	.mod-row.is-owner {
+		border-color: rgba(255, 176, 0, 0.4);
+		background: rgba(40, 28, 0, 0.2);
+	}
+
+	.mod-email {
+		flex: 1;
+		color: var(--green);
+		font-size: 0.85rem;
+		word-break: break-all;
+	}
+
+	.mod-badge {
+		font-size: 0.65rem;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		padding: 0.18rem 0.5rem;
+		border: 1px solid currentColor;
+		border-radius: 2px;
+	}
+
+	.mod-badge-owner {
+		color: var(--amber);
+	}
+
+	.mod-badge-moderator {
+		color: var(--green);
+	}
+
+	.mod-you {
+		color: #6b6b2f;
+		font-size: 0.72rem;
+		font-style: italic;
+	}
+
+	.mod-revoke {
+		background: transparent;
+		border: 1px solid #5a2222;
+		color: #c25a5a;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		letter-spacing: 0.08em;
+		padding: 0.3rem 0.7rem;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.mod-revoke:hover:not(:disabled) {
+		background: #c25a5a;
+		color: #0a0a0a;
+		border-color: #c25a5a;
+	}
+
+	.mod-revoke:disabled {
+		opacity: 0.4;
+		cursor: default;
+	}
+
+	@media (max-width: 460px) {
+		.mod-grant {
+			flex-direction: column;
 		}
 	}
 
