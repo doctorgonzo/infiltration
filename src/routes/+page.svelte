@@ -614,9 +614,12 @@
 		eventSource.onmessage = (event) => {
 			try {
 				const entry: GameLogEntry = JSON.parse(event.data);
-				// Client-side safety filter: skip entries not meant for this player
-				if (entry.targetPlayer && entry.targetPlayer !== playerId) return;
-				if (entry.targetParty && (!character?.partyId || entry.targetParty !== character.partyId)) return;
+				// The server is the single source of truth for visibility
+				// (isEntryVisibleTo, OR-combined across player/party/location). Do NOT
+				// re-filter here: entries are multi-targeted (e.g. another player's
+				// action carries their targetPlayer AND our shared location/party), so a
+				// naive targetPlayer check would wrongly drop everyone else's events.
+				// appendEntries() dedupes our own POST-rendered entries by content.
 				appendEntry(entry);
 			} catch {}
 		};
