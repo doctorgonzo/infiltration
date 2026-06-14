@@ -2159,9 +2159,9 @@ export async function processAction(
 
 		// Unlock attempt: /admin <secret>
 		if (arg && arg.toLowerCase() !== 'lock') {
-			const secret = envVar('ADMIN_SECRET');
+			const secret = envVar('ADMIN_SECRET').trim();
 			if (!secret) {
-				console.warn('[admin] ADMIN_SECRET is not set — unlock is impossible until you set it.');
+				console.warn('[admin] DENIED: ADMIN_SECRET is not set in this environment (restart/redeploy after setting it).');
 				return sysMsg('⛔ Access denied.');
 			}
 			if (arg === secret) {
@@ -2169,6 +2169,8 @@ export async function processAction(
 				saveState();
 				return sysMsg('🔓 Admin unlocked. Bare /admin toggles god mode, /cheat opens the cheat menu, /admin lock re-locks.');
 			}
+			// No-leak diagnostic: lengths only, never the values.
+			console.warn(`[admin] DENIED: secret mismatch (you typed ${arg.length} chars, ADMIN_SECRET is ${secret.length} chars).`);
 			return sysMsg('⛔ Access denied.');
 		}
 
