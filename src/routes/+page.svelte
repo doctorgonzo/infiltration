@@ -1096,6 +1096,10 @@
 			{/if}
 		</div>
 
+		{#if billingError}
+			<div class="error-msg account-error">{billingError}</div>
+		{/if}
+
 		<div class="join-form">
 			{#if existingCharacters.length > 0}
 				<div class="form-group">
@@ -2388,6 +2392,11 @@
 	.account-link:disabled {
 		opacity: 0.5;
 		cursor: default;
+	}
+
+	.account-error {
+		margin: -0.75rem 0 1.5rem;
+		text-align: center;
 	}
 
 	/* ═══════════════════════════════════════════════════════ */
