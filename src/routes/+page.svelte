@@ -1080,7 +1080,7 @@
 
 		<div class="account-bar">
 			<span class="account-plan">
-				Plan: <strong>{TIER_LABELS[authUser?.tier ?? 'free'] ?? authUser?.tier}</strong>
+				Plan: <strong>{isComped ? TIER_LABELS[authUser?.role ?? ''] ?? authUser?.role : TIER_LABELS[authUser?.tier ?? 'free'] ?? authUser?.tier}</strong>
 				{#if authUser?.subscription_status && authUser.subscription_status !== 'active'}
 					<span class="account-substatus">({authUser.subscription_status})</span>
 				{/if}
