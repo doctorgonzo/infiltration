@@ -40,6 +40,66 @@ function isTier(t: string): t is Tier {
 	return t in TIERS;
 }
 
+// ── Pricing (USD per 1M tokens) ────────────────────────────
+// Anthropic list prices for the models we route to. cacheRead/cacheWrite cover
+// prompt-caching reads/writes. Unknown models (e.g. the local backend) price to
+// zero — that compute isn't on our cloud bill.
+type ModelPrice = { in: number; out: number; cacheRead: number; cacheWrite: number };
+const PRICING: Record<string, ModelPrice> = {
+	'claude-haiku-4-5-20251001': { in: 1, out: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+	'claude-sonnet-4-6': { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+	'claude-opus-4-6': { in: 15, out: 75, cacheRead: 1.5, cacheWrite: 18.75 }
+};
+
+// Dollar cost of one LLM round, from an Anthropic-shaped usage object.
+export function costForUsage(
+	modelId: string,
+	usage: {
+		input_tokens?: number;
+		output_tokens?: number;
+		cache_read_input_tokens?: number;
+		cache_creation_input_tokens?: number;
+	}
+): number {
+	const p = PRICING[modelId];
+	if (!p) return 0;
+	const uncachedIn = usage.input_tokens ?? 0;
+	const cacheRead = usage.cache_read_input_tokens ?? 0;
+	const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+	const out = usage.output_tokens ?? 0;
+	return (
+		(uncachedIn * p.in + cacheRead * p.cacheRead + cacheWrite * p.cacheWrite + out * p.out) / 1_000_000
+	);
+}
+
+// ── Budget governor ────────────────────────────────────────
+// A coarse safety valve: when the month's global cloud spend crosses the
+// budget, NON-REVENUE accounts (free tier + owner + moderators) get throttled
+// down to Haiku. Paid tiers are never touched — they're revenue-positive by
+// design, so serving them can't lose money.
+export function cloudBudgetUsd(): number {
+	const n = Number(process.env.CLOUD_BUDGET_USD ?? 30);
+	return Number.isFinite(n) && n > 0 ? n : 30;
+}
+
+export function monthlyCloudSpend(now = new Date()): number {
+	const row = getDb()
+		.prepare('SELECT cost_usd FROM budget WHERE period = ?')
+		.get(currentPeriod(now)) as { cost_usd: number } | undefined;
+	return row?.cost_usd ?? 0;
+}
+
+export function budgetExceeded(now = new Date()): boolean {
+	return monthlyCloudSpend(now) >= cloudBudgetUsd();
+}
+
+// Non-revenue accounts are throttleable; paying customers never are.
+function isThrottleable(row: UserRow | null): boolean {
+	if (!row) return true;
+	if (row.role === 'owner' || row.role === 'moderator') return true;
+	return TIERS[tierFor(row)].priceUsd === 0; // free tier
+}
+
 // Owner (Doc) and moderators (comped friends) both play free + uncapped, and
 // neither gets the /cheat menu (that stays on the separate character.isAdmin
 // flag). They differ only on model: owner narrates on Opus, moderators on
@@ -70,9 +130,11 @@ export function resolveModelForUser(userId: string | null): NarrationModel {
 	if (!userId) return HAIKU;
 	const row = getUserRow(userId);
 	if (!row) return HAIKU;
-	if (row.role === 'owner') return OPUS;
-	if (row.role === 'moderator') return SONNET;
-	return isTier(row.tier) ? TIERS[row.tier].model : HAIKU;
+	const base =
+		row.role === 'owner' ? OPUS : row.role === 'moderator' ? SONNET : isTier(row.tier) ? TIERS[row.tier].model : HAIKU;
+	// Budget governor: over budget → throttle non-revenue accounts to Haiku.
+	if (base !== HAIKU && isThrottleable(row) && budgetExceeded()) return HAIKU;
+	return base;
 }
 
 export function resolveModelForCharacter(characterId: string): NarrationModel {
@@ -137,6 +199,36 @@ export function recordAction(
 			   cost_usd     = cost_usd + excluded.cost_usd`
 		)
 		.run(userId, period, tokensIn, tokensOut, costUsd);
+}
+
+// Record an action's cloud spend: bumps the per-user usage row (tokens + cost,
+// NOT the action count — that's recordAction's job) and the global monthly
+// budget bucket the governor reads. userId may be null (ownerless character) —
+// the global budget still accrues so spend is never undercounted.
+export function recordCloudCost(
+	userId: string | null,
+	costUsd: number,
+	usage: { tokensIn?: number; tokensOut?: number } = {},
+	now = new Date()
+): void {
+	if (costUsd <= 0) return;
+	const period = currentPeriod(now);
+	const { tokensIn = 0, tokensOut = 0 } = usage;
+	const db = getDb();
+	if (userId) {
+		db.prepare(
+			`INSERT INTO usage (user_id, period, actions_used, tokens_in, tokens_out, cost_usd)
+			 VALUES (?, ?, 0, ?, ?, ?)
+			 ON CONFLICT(user_id, period) DO UPDATE SET
+			   tokens_in  = tokens_in + excluded.tokens_in,
+			   tokens_out = tokens_out + excluded.tokens_out,
+			   cost_usd   = cost_usd + excluded.cost_usd`
+		).run(userId, period, tokensIn, tokensOut, costUsd);
+	}
+	db.prepare(
+		`INSERT INTO budget (period, cost_usd) VALUES (?, ?)
+		 ON CONFLICT(period) DO UPDATE SET cost_usd = cost_usd + excluded.cost_usd`
+	).run(period, costUsd);
 }
 
 // ── Romance teaser gate ────────────────────────────────────

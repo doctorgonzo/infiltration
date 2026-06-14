@@ -11,7 +11,7 @@ import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC, Item } from '$lib/types';
 import { syncAdvancement } from '$lib/progression';
-import { resolveModelForCharacter, romanceAccess, recordRomanceTurn, type NarrationModel } from '$lib/server/entitlements';
+import { resolveModelForCharacter, romanceAccess, recordRomanceTurn, costForUsage, recordCloudCost, type NarrationModel } from '$lib/server/entitlements';
 import { getCharacterOwner } from '$lib/server/ownership';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
@@ -2940,6 +2940,12 @@ Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Chr
 		let roundNumber = 0;
 		let enforcementMode = false;  // When true, suppress text blocks from Director
 
+		// Tally this action's cloud spend across every round (narration + enforcement)
+		// for the budget governor + per-user usage. Local backend prices to ~0.
+		let actionCostUsd = 0;
+		let actionTokensIn = 0;
+		let actionTokensOut = 0;
+
 		while (continueLoop) {
 			roundNumber++;
 			// Build tools array with cache_control on the last tool.
@@ -2999,6 +3005,11 @@ Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Chr
 				const cacheCreate = data.usage.cache_creation_input_tokens ?? 0;
 				const uncached = data.usage.input_tokens;
 				console.log(`[director]   tokens — in: ${uncached}, out: ${data.usage.output_tokens}${cacheRead ? `, cache_hit: ${cacheRead}` : ''}${cacheCreate ? `, cache_write: ${cacheCreate}` : ''}`);
+				// Cost this round priced by the model that actually ran it.
+				const roundModelId = enforcementMode ? 'claude-haiku-4-5-20251001' : narrationModel.model;
+				actionCostUsd += costForUsage(roundModelId, data.usage);
+				actionTokensIn += (uncached ?? 0) + cacheRead + cacheCreate;
+				actionTokensOut += data.usage.output_tokens ?? 0;
 			}
 
 			// Process response blocks
@@ -3201,6 +3212,13 @@ Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Chr
 			if (messages.length > 14) {
 				continueLoop = false;
 			}
+		}
+
+		// Record this action's cloud spend → per-user usage + the global monthly
+		// budget the governor reads. Skips when nothing was billed (local backend)
+		// or the character has no owning account.
+		if (actionCostUsd > 0) {
+			recordCloudCost(ownerId, actionCostUsd, { tokensIn: actionTokensIn, tokensOut: actionTokensOut });
 		}
 	} catch (error) {
 		console.error('[director] ❌ Error:', error);
