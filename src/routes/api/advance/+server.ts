@@ -17,13 +17,19 @@ import {
 	hasPendingAdvancement
 } from '$lib/progression';
 import type { AbilityName, Skill } from '$lib/types';
+import { userOwnsCharacter } from '$lib/server/ownership';
 
 const ABILITIES: AbilityName[] = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA'];
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await request.json();
 	const { playerId } = body;
 	if (!playerId) return json({ error: 'Missing playerId' }, { status: 400 });
+
+	if (!locals.user) return json({ error: 'Log in to play.' }, { status: 401 });
+	if (!userOwnsCharacter(locals.user.id, playerId)) {
+		return json({ error: 'That character belongs to another account.' }, { status: 403 });
+	}
 
 	const character = getCharacter(playerId);
 	if (!character) return json({ error: 'Unknown player. Join the game first.' }, { status: 401 });

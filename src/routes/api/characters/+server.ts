@@ -6,6 +6,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { deleteCharacter, getCharacter, getState, isCharacterActive } from '$lib/server/engine/state';
+import { userOwnsCharacter } from '$lib/server/ownership';
 
 export const GET: RequestHandler = async ({ url }) => {
 	const playerName = url.searchParams.get('playerName');
@@ -41,7 +42,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	return json({ characters });
 };
 
-export const DELETE: RequestHandler = async ({ request, url }) => {
+export const DELETE: RequestHandler = async ({ request, url, locals }) => {
 	let body: Record<string, unknown> = {};
 	try {
 		body = await request.json();
@@ -50,21 +51,22 @@ export const DELETE: RequestHandler = async ({ request, url }) => {
 	const characterId = typeof body.characterId === 'string'
 		? body.characterId
 		: url.searchParams.get('characterId');
-	const playerName = typeof body.playerName === 'string'
-		? body.playerName
-		: url.searchParams.get('playerName');
 
-	if (!characterId || !playerName) {
-		return json({ error: 'Missing required fields: characterId, playerName' }, { status: 400 });
+	if (!characterId) {
+		return json({ error: 'Missing required field: characterId' }, { status: 400 });
+	}
+
+	// Hard mode: only the owning account can delete a character.
+	if (!locals.user) {
+		return json({ error: 'Log in to manage characters.' }, { status: 401 });
+	}
+	if (!userOwnsCharacter(locals.user.id, characterId)) {
+		return json({ error: 'That character belongs to another account.' }, { status: 403 });
 	}
 
 	const character = getCharacter(characterId);
 	if (!character) {
 		return json({ error: 'Character not found.' }, { status: 404 });
-	}
-
-	if (character.playerName.toLowerCase() !== playerName.trim().toLowerCase()) {
-		return json({ error: 'That character belongs to another player.' }, { status: 403 });
 	}
 
 	const deleted = deleteCharacter(characterId);

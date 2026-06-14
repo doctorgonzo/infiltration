@@ -3,13 +3,20 @@
 // GET (returns SSE stream)
 // ═══════════════════════════════════════════════════════════
 
+import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { subscribe, getRecentLog, getCharacter, isEntryVisibleTo } from '$lib/server/engine/state';
+import { userOwnsCharacter } from '$lib/server/ownership';
 
-export const GET: RequestHandler = async ({ request, url }) => {
+export const GET: RequestHandler = async ({ request, url, locals }) => {
 	const encoder = new TextEncoder();
 	const skipHistory = url.searchParams.get('fresh') === '1';
 	const playerId = url.searchParams.get('playerId');
+
+	// Hard mode: streaming a character's event feed requires owning it.
+	if (playerId && (!locals.user || !userOwnsCharacter(locals.user.id, playerId))) {
+		throw error(403, 'Not authorized for that character.');
+	}
 
 	const stream = new ReadableStream({
 		start(controller) {

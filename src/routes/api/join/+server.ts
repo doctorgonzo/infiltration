@@ -12,6 +12,7 @@ import type { Character, AbilityScores, PlayerSession, AbilityName, Skill } from
 import { CLASS_KEY_ABILITY, CLASS_HIT_DIE } from '$lib/types';
 import type { HeroClass } from '$lib/types';
 import { HERO_CLASS_SKILLS, ALL_SKILLS, applyFeatBonuses, skillPointsForLevel, maxSkillRank, isClassSkill } from '$lib/progression';
+import { setCharacterOwner } from '$lib/server/ownership';
 
 const VALID_CLASSES: HeroClass[] = [
 	'Strong Hero', 'Fast Hero', 'Tough Hero',
@@ -36,7 +37,11 @@ const CLASS_STARTING_FEAT: Record<HeroClass, string> = {
 	'Charismatic Hero': 'Trustworthy'
 };
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
+	if (!locals.user) {
+		return json({ error: 'Log in to create a character.' }, { status: 401 });
+	}
+
 	const body = await request.json();
 	const { playerName, characterName, heroClass } = body;
 
@@ -179,6 +184,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	character.hp = character.maxHp;
 
 	addCharacter(character);
+	setCharacterOwner(playerId, locals.user.id); // bind to the creating account
 
 	// ── Session ────────────────────────────────────────────
 	const session: PlayerSession = {

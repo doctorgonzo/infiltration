@@ -7,9 +7,18 @@
 	} from '$lib/progression';
 
 	// ── State ──────────────────────────────────────────────
-	type Phase = 'name' | 'select' | 'create' | 'play' | 'dead';
-	let phase = $state<Phase>('name');
+	type Phase = 'login' | 'select' | 'create' | 'play' | 'dead';
+	let phase = $state<Phase>('login');
 	let playerId = $state<string | null>(null);
+
+	// ── Auth (hard mode: login required) ──────────────────
+	interface AuthUser { id: string; email: string; role: string; tier: string; }
+	let authUser = $state<AuthUser | null>(null);
+	let loginEmail = $state('');
+	let loginSending = $state(false);
+	let loginSent = $state(false);
+	let loginError = $state('');
+
 	let character = $state<Character | null>(null);
 	let messages = $state<GameLogEntry[]>([]);
 	let input = $state('');
@@ -405,25 +414,40 @@
 		appendEntries([entry]);
 	}
 
-	async function enterName() {
-		if (!playerName.trim()) return;
-		localStorage.setItem('infiltration_playerName', playerName.trim());
-		await loadCharacters();
+	// Request a magic login link.
+	async function requestLogin() {
+		if (!loginEmail.trim()) { loginError = 'Enter your email.'; return; }
+		loginSending = true;
+		loginError = '';
+		try {
+			const res = await fetch('/api/auth/request', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: loginEmail.trim() })
+			});
+			const data = await res.json();
+			if (!res.ok) { loginError = data.error || 'Could not send the link.'; return; }
+			loginSent = true;
+		} catch {
+			loginError = 'Network error. Try again.';
+		} finally {
+			loginSending = false;
+		}
 	}
 
+	// Load the logged-in account's owned characters → select screen.
 	async function loadCharacters() {
 		isLoadingCharacters = true;
 		deleteCharacterError = '';
 		try {
-			const res = await fetch(`/api/characters?playerName=${encodeURIComponent(playerName.trim())}`);
+			const res = await fetch('/api/characters/mine');
 			const data = await res.json();
 			existingCharacters = data.characters ?? [];
-			phase = 'select';
 		} catch {
 			existingCharacters = [];
-			phase = 'select';
 		} finally {
 			isLoadingCharacters = false;
+			phase = 'select';
 		}
 	}
 
@@ -693,7 +717,7 @@
 		loadCharacters();
 	}
 
-	function fullLogout() {
+	async function fullLogout() {
 		if (playerId) {
 			fetch('/api/logout', {
 				method: 'POST',
@@ -701,16 +725,21 @@
 				body: JSON.stringify({ playerId })
 			}).catch(() => {});
 		}
+		await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
 		if (eventSource) eventSource.close();
 		eventSource = null;
 		localStorage.removeItem('infiltration_playerId');
 		localStorage.removeItem('infiltration_playerName');
 		playerId = null;
 		character = null;
+		authUser = null;
 		resetMessages();
 		playerName = '';
 		existingCharacters = [];
-		phase = 'name';
+		loginEmail = '';
+		loginSent = false;
+		loginError = '';
+		phase = 'login';
 	}
 
 	async function refreshState() {
@@ -817,46 +846,54 @@
 	}
 
 	// ── Lifecycle ──────────────────────────────────────────
-	onMount(() => {
-		const savedName = localStorage.getItem('infiltration_playerName');
+	// Auth-first boot: resolve the session, then claim legacy characters and
+	// either resume the last one or show the select screen.
+	async function initAuth() {
+		// Surface magic-link redirect feedback, then clean the URL.
+		const params = new URLSearchParams(location.search);
+		if (params.get('auth') === 'expired') {
+			loginError = 'That login link expired or was already used — request a new one.';
+		}
+		if (params.has('auth')) history.replaceState(null, '', location.pathname);
+
+		let me: { user: AuthUser | null };
+		try {
+			me = await (await fetch('/api/auth/me')).json();
+		} catch {
+			phase = 'login';
+			return;
+		}
+		if (!me.user) {
+			phase = 'login';
+			return;
+		}
+		authUser = me.user;
+		// Default display handle for new characters (decoupled from auth).
+		if (!playerName) playerName = me.user.email.split('@')[0] || 'agent';
+
+		// Migration: fold any legacy localStorage characters into this account.
+		const legacyName = localStorage.getItem('infiltration_playerName');
+		if (legacyName) {
+			await fetch('/api/characters/claim', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ playerName: legacyName })
+			}).catch(() => {});
+		}
+
+		await loadCharacters();
+
+		// Resume the last-played character if it's still owned and alive.
 		const savedId = localStorage.getItem('infiltration_playerId');
-
-		if (savedName) {
-			playerName = savedName;
+		if (savedId && existingCharacters.some((c) => c.id === savedId && c.alive)) {
+			selectCharacter(savedId);
+		} else if (savedId) {
+			localStorage.removeItem('infiltration_playerId');
 		}
+	}
 
-		if (savedId && savedName) {
-			// Try to reconnect to last character
-			playerId = savedId;
-			fetch(`/api/state?playerId=${savedId}`)
-				.then(r => r.json())
-				.then(data => {
-					if (data.character) {
-						character = data.character;
-						lastKnownLevel = data.character.level;
-						if (data.worldTime) worldTime = data.worldTime;
-						if (data.dayNumber != null) dayNumber = data.dayNumber;
-						resetMessages();
-						captureSessionStart(data.character);
-						phase = 'play';
-						connectStream();
-					} else {
-						// Character gone — go to select screen
-						localStorage.removeItem('infiltration_playerId');
-						playerId = null;
-						loadCharacters();
-					}
-				})
-				.catch(() => {
-					localStorage.removeItem('infiltration_playerId');
-					playerId = null;
-					if (savedName) loadCharacters();
-				});
-		} else if (savedName) {
-			// Have a name but no active character — show select
-			loadCharacters();
-		}
-
+	onMount(() => {
+		initAuth();
 		return () => {
 			if (eventSource) eventSource.close();
 		};
@@ -882,7 +919,7 @@
 <!-- NAME ENTRY SCREEN                                          -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
-{#if phase === 'name'}
+{#if phase === 'login'}
 <div class="join-screen">
 	<div class="join-container">
 		<div class="title-block">
@@ -893,29 +930,40 @@
 		</div>
 
 		<div class="join-form">
-			<div class="form-group">
-				<label for="playerName">YOUR NAME</label>
-				<input
-					id="playerName"
-					type="text"
-					bind:value={playerName}
-					placeholder="Who are you, really?"
-					maxlength="30"
-					onkeydown={(e) => e.key === 'Enter' && enterName()}
-				/>
-			</div>
+			{#if loginSent}
+				<div class="login-sent">
+					<p class="login-sent-title">📨 CHECK YOUR EMAIL</p>
+					<p class="login-sent-sub">We sent a login link to <strong>{loginEmail}</strong>. Click it to enter Madison. The link expires in 15 minutes.</p>
+					<button class="switch-player-button" onclick={() => { loginSent = false; }}>USE A DIFFERENT EMAIL</button>
+				</div>
+			{:else}
+				<div class="form-group">
+					<label for="loginEmail">EMAIL</label>
+					<input
+						id="loginEmail"
+						type="email"
+						bind:value={loginEmail}
+						placeholder="you@example.com"
+						autocomplete="email"
+						onkeydown={(e) => e.key === 'Enter' && requestLogin()}
+					/>
+				</div>
 
-			<button
-				class="join-button"
-				onclick={enterName}
-				disabled={!playerName.trim() || isLoadingCharacters}
-			>
-				{#if isLoadingCharacters}
-					<span class="loading-dots">CONNECTING</span>
-				{:else}
-					CONTINUE
-				{/if}
-			</button>
+				{#if loginError}<div class="error-msg">{loginError}</div>{/if}
+
+				<button
+					class="join-button"
+					onclick={requestLogin}
+					disabled={!loginEmail.trim() || loginSending}
+				>
+					{#if loginSending}
+						<span class="loading-dots">SENDING LINK</span>
+					{:else}
+						SEND LOGIN LINK
+					{/if}
+				</button>
+				<p class="login-hint">No password. We email you a one-time link to sign in.</p>
+			{/if}
 		</div>
 
 		<div class="join-footer">
@@ -934,7 +982,7 @@
 	<div class="join-container">
 		<div class="title-block">
 			<h1 class="title">INFILTRATION</h1>
-			<p class="subtitle">Welcome back, {playerName}</p>
+			<p class="subtitle">Signed in as {authUser?.email ?? playerName}</p>
 			<div class="title-rule"></div>
 		</div>
 
@@ -991,7 +1039,7 @@
 			</button>
 
 			<button class="switch-player-button" onclick={fullLogout}>
-				DIFFERENT PLAYER
+				LOG OUT
 			</button>
 		</div>
 	</div>
@@ -1301,7 +1349,7 @@
 			</div>
 		{/if}
 
-		<button class="death-button" onclick={() => { character = null; playerId = null; phase = 'name'; }}>
+		<button class="death-button" onclick={() => { character = null; playerId = null; localStorage.removeItem('infiltration_playerId'); loadCharacters(); }}>
 			RETURN TO CHARACTER SELECT
 		</button>
 	</div>
@@ -1327,7 +1375,7 @@
 				<div class="gameover-stats">
 					Day {gameOver.dayAtEnd} · Invasion held at {gameOver.invasionAtEnd}%
 				</div>
-				<button class="death-button" onclick={() => { character = null; playerId = null; phase = 'name'; }}>
+				<button class="death-button" onclick={() => { character = null; playerId = null; localStorage.removeItem('infiltration_playerId'); loadCharacters(); }}>
 					RETURN TO CHARACTER SELECT
 				</button>
 			</div>
@@ -4092,5 +4140,33 @@
 		flex-direction: column;
 		gap: 0.5rem;
 		margin-top: 0.5rem;
+	}
+
+	/* ── Login screen ── */
+	.login-hint {
+		margin-top: 0.6rem;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		color: var(--gray);
+		text-align: center;
+	}
+	.login-sent {
+		text-align: center;
+		padding: 0.5rem 0;
+	}
+	.login-sent-title {
+		font-family: var(--font-display);
+		color: var(--green);
+		font-size: 1.05rem;
+		letter-spacing: 0.05em;
+		margin: 0 0 0.5rem;
+		text-shadow: 0 0 12px var(--green-glow);
+	}
+	.login-sent-sub {
+		font-family: var(--font-mono);
+		font-size: 0.82rem;
+		color: var(--green-dim);
+		line-height: 1.5;
+		margin: 0 0 1rem;
 	}
 </style>

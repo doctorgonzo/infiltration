@@ -6,9 +6,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getCharacter, getSession, addSession, touchCharacter, withPlayerLock } from '$lib/server/engine/state';
+import { userOwnsCharacter } from '$lib/server/ownership';
 import { processAction } from '$lib/server/engine/director';
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await request.json();
 	const { playerId, action } = body;
 
@@ -22,6 +23,14 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	if (action.length > 500) {
 		return json({ error: 'Keep it under 500 characters, Hemingway.' }, { status: 400 });
+	}
+
+	// Hard mode: must be logged in and own this character.
+	if (!locals.user) {
+		return json({ error: 'Log in to play.' }, { status: 401 });
+	}
+	if (!userOwnsCharacter(locals.user.id, playerId)) {
+		return json({ error: 'That character belongs to another account.' }, { status: 403 });
 	}
 
 	// Verify player exists — check world state, not just sessions

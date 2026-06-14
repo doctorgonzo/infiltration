@@ -7,10 +7,17 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getState, getCharacter, getActivePlayerCount, touchCharacter, decayInebriation, saveState } from '$lib/server/engine/state';
 import { syncAdvancement } from '$lib/progression';
+import { userOwnsCharacter } from '$lib/server/ownership';
 
-export const GET: RequestHandler = async ({ url }) => {
+export const GET: RequestHandler = async ({ url, locals }) => {
 	const playerId = url.searchParams.get('playerId');
 	const state = getState();
+
+	// Hard mode: a character view requires being logged in as its owner.
+	// (No playerId → public world info only.)
+	if (playerId && (!locals.user || !userOwnsCharacter(locals.user.id, playerId))) {
+		return json({ error: 'Not authorized for that character.' }, { status: 403 });
+	}
 
 	// Build a safe view of world state (no secret infiltrator flags, etc.)
 	const character = playerId ? getCharacter(playerId) : null;
