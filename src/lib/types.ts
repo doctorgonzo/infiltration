@@ -259,8 +259,11 @@ export interface GameLogEntry {
 	timestamp: string;
 	type: 'narration' | 'action' | 'combat' | 'system' | 'dialogue' | 'roll';
 	actor?: string;           // who triggered this
-	targetPlayer?: string;    // if set, only this player sees the entry (private narration/rolls)
-	targetParty?: string;     // if set, all party members see the entry
+	// Visibility targets are OR-combined: an entry with no targets is public;
+	// otherwise a viewer sees it if ANY set target matches them.
+	targetPlayer?: string;    // the specific player it belongs to (private rolls, DMs, actor's own copy)
+	targetParty?: string;     // all members of this party see it (cross-location party awareness)
+	targetLocation?: string;  // everyone currently AT this location sees it (room/witness broadcast)
 	text: string;
 	roll?: {
 		dice: string;

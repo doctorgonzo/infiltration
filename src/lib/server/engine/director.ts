@@ -6,7 +6,7 @@
 // Tool use keeps the game honest.
 // ═══════════════════════════════════════════════════════════
 
-import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive, createParty, getPlayerParty, inviteToParty, joinParty, leaveParty, disbandParty, getPartyMembers, findPendingInvite, getCharacter, decayInebriation } from './state';
+import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActive, isEntryVisibleTo, createParty, getPlayerParty, inviteToParty, joinParty, leaveParty, disbandParty, getPartyMembers, findPendingInvite, getCharacter, decayInebriation } from './state';
 import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC } from '$lib/types';
@@ -2568,8 +2568,11 @@ export async function processAction(
 		type: 'action',
 		actor: character.name,
 		text: action,
-		// Party members see each other's actions; solo players see only their own
-		...(playerParty ? { targetParty: playerParty.id } : { targetPlayer: playerId })
+		// Visible to: the actor (always), everyone in the same room (witness model),
+		// and — if partied — party members anywhere (cross-location awareness).
+		targetPlayer: playerId,
+		targetLocation: character.location,
+		...(playerParty ? { targetParty: playerParty.id } : {})
 	};
 	addLogEntry(actionEntry);
 
@@ -2579,12 +2582,10 @@ export async function processAction(
 	// invisible cross-player chatter is interleaved, and keeps the per-turn payload small.
 	const RECENT_LOG_WINDOW = 24;
 	const recentLog = state.gameLog
-		.filter(e => {
-			if (!e.targetPlayer && !e.targetParty) return true;
-			if (e.targetPlayer && e.targetPlayer === playerId) return true;
-			if (e.targetParty && playerParty && e.targetParty === playerParty.id) return true;
-			return false;
-		})
+		// Include co-located room events (e.targetLocation === here) so the Director
+		// sees other players' ongoing interactions with shared NPCs and keeps them
+		// consistent — one Jenny, not one per player.
+		.filter(e => isEntryVisibleTo(e, playerId, playerParty?.id, character.location))
 		.slice(-RECENT_LOG_WINDOW)
 		.map(e => {
 			if (e.actor) return `[${e.type}] ${e.actor}: ${e.text}`;
@@ -2784,19 +2785,16 @@ Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Chr
 						console.log(`[director]   🚫 SUPPRESSED (${isMeta ? 'meta' : 'enforcement'}): "${trimmed.substring(0, 100)}..."`);
 					} else {
 						console.log(`[director]   📝 NARRATION: "${trimmed.substring(0, 150)}${trimmed.length > 150 ? '...' : ''}"`);
-						// Party narration: all party members at the same location see it.
-						// Solo or no party: only the acting player sees it.
-						const partyMembersHere = playerParty
-							? getPartyMembers(playerParty.id).filter(m => m.location === character.location)
-							: [];
-						const isPartyNarration = partyMembersHere.length > 1; // >1 means at least one OTHER member here
+						// Narration is a ROOM broadcast: everyone present at the location
+						// witnesses it (so a shared NPC behaves the same for all of them).
+						// targetPlayer keeps the actor's own copy guaranteed even if the
+						// action moved them mid-turn. Private rolls stay separate (below).
 						const entry: GameLogEntry = {
 							timestamp: new Date().toISOString(),
 							type: 'narration',
 							text: trimmed,
-							...(isPartyNarration
-								? { targetParty: playerParty!.id }
-								: { targetPlayer: playerId })
+							targetPlayer: playerId,
+							targetLocation: character.location
 						};
 						entries.push(entry);
 						addLogEntry(entry);
