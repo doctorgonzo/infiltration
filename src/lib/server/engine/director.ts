@@ -2794,7 +2794,10 @@ Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Chr
 							type: 'narration',
 							text: trimmed,
 							targetPlayer: playerId,
-							targetLocation: character.location
+							targetLocation: character.location,
+							// Party members share the full experience everywhere — even if
+							// they're in a different room from the acting player.
+							...(playerParty ? { targetParty: playerParty.id } : {})
 						};
 						entries.push(entry);
 						addLogEntry(entry);
@@ -2842,6 +2845,8 @@ Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Chr
 							type: 'roll',
 							text: rollText,
 							targetPlayer: playerId,
+							// Party shares dice too — everyone sees the same rolls.
+							...(playerParty ? { targetParty: playerParty.id } : {}),
 							roll: {
 								dice: toolBlock.input.expression ?? '1d20',
 								result: parsed.natural ?? parsed.roll ?? parsed.attackRoll ?? 0,
