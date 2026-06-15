@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Character, GameLogEntry, HeroClass, AbilityName, Skill } from '$lib/types';
 	import { onMount } from 'svelte';
+	import { dev } from '$app/environment';
 	import {
 		GENERAL_FEATS, CLASS_BONUS_FEATS, ALL_SKILLS,
 		isClassSkill, maxSkillRank, skillPointsForLevel, hasPendingAdvancement
@@ -25,6 +26,8 @@
 	let loginSending = $state(false);
 	let loginSent = $state(false);
 	let loginError = $state('');
+	// Dev-only instant login (skips the magic-link round-trip while testing).
+	let devEmail = $state('doc@example.com');
 
 	// ── Billing / pricing ─────────────────────────────────
 	// Plan catalog mirrors the server's TIERS (entitlements.ts) but lives here
@@ -616,6 +619,30 @@
 		}
 	}
 
+	// Dev-only: log in instantly, no email. Optional role/tier to test paths.
+	async function devLogin(email: string, opts: { role?: string; tier?: string } = {}) {
+		if (!email.trim()) { loginError = 'Enter an email.'; return; }
+		loginSending = true;
+		loginError = '';
+		try {
+			const res = await fetch('/api/auth/dev-login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: email.trim(), ...opts })
+			});
+			if (!res.ok) {
+				const data = await res.json().catch(() => ({}));
+				loginError = data.error || 'Dev login failed.';
+				return;
+			}
+			await initAuth();
+		} catch {
+			loginError = 'Network error. Try again.';
+		} finally {
+			loginSending = false;
+		}
+	}
+
 	// Load the logged-in account's owned characters → select screen.
 	async function loadCharacters() {
 		isLoadingCharacters = true;
@@ -1165,6 +1192,28 @@
 				<p class="login-hint">No password. We email you a one-time link to sign in.</p>
 			{/if}
 		</div>
+
+		{#if dev}
+			<div class="dev-login">
+				<p class="dev-login-title">⚡ DEV LOGIN <span>· localhost only · instant · no email</span></p>
+				<div class="dev-login-row">
+					<input
+						class="dev-login-input"
+						type="email"
+						bind:value={devEmail}
+						placeholder="anyone@dev.local"
+						onkeydown={(e) => e.key === 'Enter' && devLogin(devEmail)}
+					/>
+					<button class="dev-login-go" onclick={() => devLogin(devEmail)} disabled={!devEmail.trim() || loginSending}>GO →</button>
+				</div>
+				<div class="dev-login-chips">
+					<button onclick={() => devLogin('owner@dev.local', { role: 'owner' })} disabled={loginSending}>👑 owner</button>
+					<button onclick={() => devLogin('mod@dev.local', { role: 'moderator' })} disabled={loginSending}>🛡 mod</button>
+					<button onclick={() => devLogin('free@dev.local', { role: 'user', tier: 'free' })} disabled={loginSending}>🆓 free</button>
+					<button onclick={() => devLogin('champion@dev.local', { role: 'user', tier: 'champion' })} disabled={loginSending}>💳 champion</button>
+				</div>
+			</div>
+		{/if}
 
 		<div class="join-footer">
 			<p>One server. One world. Always running.</p>
@@ -5060,6 +5109,84 @@
 		font-size: 0.72rem;
 		color: var(--gray);
 		text-align: center;
+	}
+	/* Dev-only instant login panel (never rendered in the deployed build). */
+	.dev-login {
+		margin-top: 1.25rem;
+		padding: 0.85rem 0.9rem;
+		border: 1px dashed var(--amber);
+		border-radius: 4px;
+		background: rgba(255, 176, 0, 0.05);
+	}
+	.dev-login-title {
+		margin: 0 0 0.6rem;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		color: var(--amber);
+	}
+	.dev-login-title span {
+		font-weight: 400;
+		opacity: 0.7;
+		letter-spacing: 0.02em;
+	}
+	.dev-login-row {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.dev-login-input {
+		flex: 1;
+		min-width: 0;
+		padding: 0.5rem 0.6rem;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		background: rgba(0, 0, 0, 0.4);
+		border: 1px solid var(--amber);
+		border-radius: 3px;
+		color: var(--amber);
+	}
+	.dev-login-input::placeholder {
+		color: rgba(255, 176, 0, 0.4);
+	}
+	.dev-login-go {
+		padding: 0.5rem 0.85rem;
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		font-weight: 700;
+		background: var(--amber);
+		color: #000;
+		border: none;
+		border-radius: 3px;
+		cursor: pointer;
+	}
+	.dev-login-go:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+	.dev-login-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+		margin-top: 0.6rem;
+	}
+	.dev-login-chips button {
+		padding: 0.35rem 0.6rem;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		background: transparent;
+		border: 1px solid var(--amber);
+		border-radius: 999px;
+		color: var(--amber);
+		cursor: pointer;
+		transition: background 0.12s;
+	}
+	.dev-login-chips button:hover:not(:disabled) {
+		background: rgba(255, 176, 0, 0.15);
+	}
+	.dev-login-chips button:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
 	}
 	.login-sent {
 		text-align: center;
