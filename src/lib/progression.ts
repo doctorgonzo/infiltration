@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════
 
 import type { AbilityName, Character, HeroClass, PendingAdvancement, Skill } from './types';
+import { CLASS_HIT_DIE } from './types';
 
 export type { PendingAdvancement };
 
@@ -276,4 +277,36 @@ export function syncAdvancement(char: Character): boolean {
 
 export function hasPendingAdvancement(p?: PendingAdvancement | null): boolean {
 	return !!p && (p.generalFeats > 0 || p.classFeats > 0 || p.abilityPoints > 0 || p.skillPoints > 0);
+}
+
+// Roll hit points gained for one or more levels. Rolls the class hit die per
+// level (real dice, not the static average) and adds the CON modifier, with a
+// floor of 1 HP per level. Returns the total HP gained.
+export function rollHitPointsForLevels(cls: HeroClass, conScore: number, levelsGained = 1): number {
+	const die = CLASS_HIT_DIE[cls] ?? 6;
+	const conMod = abilityMod(conScore);
+	let total = 0;
+	for (let i = 0; i < Math.max(0, levelsGained); i++) {
+		const roll = Math.floor(Math.random() * die) + 1;
+		total += Math.max(1, roll + conMod);
+	}
+	return total;
+}
+
+// Apply a level-up to a character in place: roll hit dice for the levels gained,
+// bump maxHp/hp, set the new level, and accrue feats/ability/skill grants into
+// the pending pool. Single source of truth for every level-up path (XP award,
+// combat kill, admin cheats). Returns the HP gained for logging. No-op if the
+// new level isn't higher.
+export function applyLevelUp(char: Character, newLevel: number): number {
+	if (newLevel <= char.level) {
+		syncAdvancement(char);
+		return 0;
+	}
+	const hpGain = rollHitPointsForLevels(char.class, char.abilities.CON, newLevel - char.level);
+	char.level = newLevel;
+	char.maxHp += hpGain;
+	char.hp += hpGain;
+	syncAdvancement(char);
+	return hpGain;
 }
