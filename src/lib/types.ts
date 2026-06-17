@@ -277,6 +277,7 @@ export interface GameLogEntry {
 	targetPlayer?: string;    // the specific player it belongs to (private rolls, DMs, actor's own copy)
 	targetParty?: string;     // all members of this party see it (cross-location party awareness)
 	targetLocation?: string;  // everyone currently AT this location sees it (room/witness broadcast)
+	excludePlayer?: string;   // hard veto: this player NEVER sees it even if a target matches (e.g. the actor's third-person witness copy)
 	text: string;
 	roll?: {
 		dice: string;

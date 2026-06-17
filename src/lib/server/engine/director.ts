@@ -10,7 +10,7 @@ import { getState, saveState, addLogEntry, getPlayersAtLocation, isCharacterActi
 import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC, Item } from '$lib/types';
-import { syncAdvancement } from '$lib/progression';
+import { applyLevelUp } from '$lib/progression';
 import { resolveModelForCharacter, romanceAccess, recordRomanceTurn, costForUsage, recordCloudCost, type NarrationModel } from '$lib/server/entitlements';
 import { getCharacterOwner } from '$lib/server/ownership';
 import { env } from '$env/dynamic/private';
@@ -885,16 +885,11 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 						// Check for level up (every 1000 XP)
 						const newLevel = Math.floor(atkPlayer.xp / 1000) + 1;
 						if (newLevel > atkPlayer.level) {
-							atkPlayer.level = newLevel;
-							const conMod = Math.floor((atkPlayer.abilities.CON - 10) / 2);
-							const hitDieRoll = Math.floor(Math.random() * 6) + 1; // 1d6 base
-							const hpGain = Math.max(1, hitDieRoll + conMod);
-							atkPlayer.maxHp += hpGain;
-							atkPlayer.hp += hpGain;
+							const hpGain = applyLevelUp(atkPlayer, newLevel);
 							addLogEntry({
 								timestamp: new Date().toISOString(),
 								type: 'system',
-								text: `🔥 LEVEL UP! 🔥 ${atkPlayer.name} has reached Level ${newLevel}! +${hpGain} HP (${atkPlayer.hp}/${atkPlayer.maxHp})`
+								text: `🔥 LEVEL UP! 🔥 ${atkPlayer.name} has reached Level ${newLevel}! +${hpGain} HP (${atkPlayer.hp}/${atkPlayer.maxHp}). Open ADVANCEMENT to spend your new feats, ability points, and skill ranks.`
 							});
 						}
 					}
@@ -1336,15 +1331,9 @@ async function executeTool(name: string, input: any, state: GameState, actingPla
 			const oldLevel = char.level;
 			const newLevel = Math.floor(char.xp / 1000) + 1;
 			if (newLevel > char.level) {
-				// HP increase per level gained (handles multi-level jumps)
-				const conMod = Math.floor((char.abilities.CON - 10) / 2);
-				const hitDie = { 'Strong Hero': 8, 'Fast Hero': 8, 'Tough Hero': 10, 'Smart Hero': 6, 'Dedicated Hero': 6, 'Charismatic Hero': 6 }[char.class] ?? 6;
-				const hpGain = Math.max(1, Math.floor(hitDie / 2) + 1 + conMod) * (newLevel - char.level);
-				char.level = newLevel;
-				char.maxHp += hpGain;
-				char.hp += hpGain;
-				// Accrue feats / ability points / skill points into the pending pool.
-				syncAdvancement(char);
+				// Roll hit dice for the levels gained (handles multi-level jumps),
+				// bump HP, and accrue feats / ability / skill grants into the pool.
+				const hpGain = applyLevelUp(char, newLevel);
 				addLogEntry({
 					timestamp: new Date().toISOString(),
 					type: 'system',
@@ -2343,17 +2332,30 @@ export async function processAction(
 				const n = parseInt(argStr, 10);
 				if (isNaN(n) || n < 0) return sysMsg('Usage: /cheat xp <n>');
 				character.xp = n;
-				character.level = Math.floor(n / 1000) + 1;
+				const newLevel = Math.floor(n / 1000) + 1;
+				let hpNote = '';
+				if (newLevel > character.level) {
+					const hpGain = applyLevelUp(character, newLevel); // rolls hit dice, syncs advancement
+					hpNote = `, +${hpGain} HP (now ${character.hp}/${character.maxHp})`;
+				} else {
+					character.level = newLevel;
+				}
 				saveState();
-				return sysMsg(`✨ XP set to ${n} (Level ${character.level}).`);
+				return sysMsg(`✨ XP set to ${n} (Level ${character.level})${hpNote}.`);
 			}
 			case 'level': {
 				const n = parseInt(argStr, 10);
 				if (isNaN(n) || n < 1) return sysMsg('Usage: /cheat level <n>');
-				character.level = n;
 				character.xp = Math.max(character.xp, (n - 1) * 1000);
+				let hpNote = '';
+				if (n > character.level) {
+					const hpGain = applyLevelUp(character, n); // rolls hit dice, syncs advancement
+					hpNote = `, +${hpGain} HP (now ${character.hp}/${character.maxHp})`;
+				} else {
+					character.level = n;
+				}
 				saveState();
-				return sysMsg(`⭐ Level set to ${n} (XP ${character.xp}).`);
+				return sysMsg(`⭐ Level set to ${n} (XP ${character.xp})${hpNote}.`);
 			}
 			case 'heal': {
 				character.hp = character.maxHp;
@@ -2867,6 +2869,29 @@ ${sameLocation.length > 0
 	: `No other party members at ${character.name}'s location right now.`}`;
 	}
 
+	// ── Witnesses: anyone OTHER than the actor who will receive this turn's
+	// narration (co-located active players, or party members anywhere). Only then
+	// do we pay for a second, third-person rendering of the narration — solo turns
+	// (the common case) stay single-version and cheap.
+	const coLocatedWitness = Object.values(state.players).some(
+		p => p.id !== playerId && p.location === character.location && p.alive && isCharacterActive(p)
+	);
+	const partyWitness = !!playerParty && getPartyMembers(playerParty.id).some(m => m.id !== playerId);
+	const hasWitnesses = coLocatedWitness || partyWitness;
+
+	// When others are watching, the Director must emit BOTH a second-person copy
+	// (for the actor) and a third-person copy (for everyone else) so witnesses
+	// don't read "you" as if it were addressed to them. We split on the sentinel.
+	const WITNESS_DELIM = '---WITNESS---';
+	let witnessDirective = '';
+	if (hasWitnesses) {
+		witnessDirective = `\n\n[SYSTEM DIRECTIVE — WITNESSES PRESENT] Other players are watching ${character.name} this turn. Write your narration TWICE, separated by a line containing only ${WITNESS_DELIM}:
+1. FIRST, the normal second-person version addressed to ${character.name} ("You...", "Your...").
+2. THEN the line ${WITNESS_DELIM}.
+3. THEN the SAME narration rewritten in third person for onlookers, calling the acting player "${character.name}" (and he/she/they) instead of "you" — e.g. "${character.name} shoulders the door open."
+Keep both versions consistent in events and tone. Do NOT add the ${WITNESS_DELIM} line when no narration follows it.`;
+	}
+
 	// ── Detect actions that REQUIRE skill checks ──
 	// If the player is investigating, searching, persuading, sneaking, etc.,
 	// inject a mandatory directive so the Director can't just narrate freely.
@@ -2910,7 +2935,7 @@ ${sameLocation.length > 0
 Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Christmas lights, sticky floor, Tom Waits or Hank Williams on the jukebox — as the one door on the block that doesn't make their skin crawl. Then hand control back to the player. Keep it taut and ominous; do not over-explain the conspiracy.`;
 	}
 
-	const userMessage = `${charContext}\n${locContext}${partyContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${formatPlayerInput(character.name, action)}${arrivalDirective}${skillCheckDirective}${moneyDirective}`;
+	const userMessage = `${charContext}\n${locContext}${partyContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${formatPlayerInput(character.name, action)}${arrivalDirective}${skillCheckDirective}${moneyDirective}${witnessDirective}`;
 
 	// Call Claude
 	const entries: GameLogEntry[] = [];
@@ -3026,22 +3051,50 @@ Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Chr
 						console.log(`[director]   🚫 SUPPRESSED (${isMeta ? 'meta' : 'enforcement'}): "${trimmed.substring(0, 100)}..."`);
 					} else {
 						console.log(`[director]   📝 NARRATION: "${trimmed.substring(0, 150)}${trimmed.length > 150 ? '...' : ''}"`);
-						// Narration is a ROOM broadcast: everyone present at the location
-						// witnesses it (so a shared NPC behaves the same for all of them).
-						// targetPlayer keeps the actor's own copy guaranteed even if the
-						// action moved them mid-turn. Private rolls stay separate (below).
-						const entry: GameLogEntry = {
-							timestamp: new Date().toISOString(),
-							type: 'narration',
-							text: trimmed,
-							targetPlayer: playerId,
-							targetLocation: character.location,
-							// Party members share the full experience everywhere — even if
-							// they're in a different room from the acting player.
-							...(playerParty ? { targetParty: playerParty.id } : {})
-						};
-						entries.push(entry);
-						addLogEntry(entry);
+						const narrTs = new Date().toISOString();
+
+						// When witnesses are present the Director writes two versions split
+						// by WITNESS_DELIM: second person (actor) + third person (onlookers).
+						const delimIdx = hasWitnesses ? trimmed.indexOf(WITNESS_DELIM) : -1;
+						const secondPerson = delimIdx >= 0 ? trimmed.slice(0, delimIdx).trim() : trimmed;
+						const thirdPerson = delimIdx >= 0 ? trimmed.slice(delimIdx + WITNESS_DELIM.length).trim() : '';
+
+						if (delimIdx >= 0 && secondPerson && thirdPerson) {
+							// Actor gets the immersive second-person copy ONLY (no room/party
+							// targets — those are for the witness copy). This is what the POST
+							// response returns to the actor's client.
+							const actorEntry: GameLogEntry = {
+								timestamp: narrTs, type: 'narration', text: secondPerson, targetPlayer: playerId
+							};
+							entries.push(actorEntry);
+							addLogEntry(actorEntry);
+
+							// Witnesses (room + party) get the third-person copy. excludePlayer
+							// vetoes it for the actor, who'd otherwise match targetLocation.
+							// Not pushed to `entries` so the actor's own client never renders it.
+							const witnessEntry: GameLogEntry = {
+								timestamp: narrTs, type: 'narration', text: thirdPerson,
+								targetLocation: character.location, excludePlayer: playerId,
+								...(playerParty ? { targetParty: playerParty.id } : {})
+							};
+							addLogEntry(witnessEntry);
+						} else {
+							// Solo turn (or the model didn't comply): single broadcast copy.
+							// targetPlayer keeps the actor's own copy guaranteed even if the
+							// action moved them mid-turn. Private rolls stay separate (below).
+							const entry: GameLogEntry = {
+								timestamp: narrTs,
+								type: 'narration',
+								text: secondPerson,
+								targetPlayer: playerId,
+								targetLocation: character.location,
+								// Party members share the full experience everywhere — even if
+								// they're in a different room from the acting player.
+								...(playerParty ? { targetParty: playerParty.id } : {})
+							};
+							entries.push(entry);
+							addLogEntry(entry);
+						}
 					}
 				} else if (block.type === 'tool_use') {
 					console.log(`[director]   🔧 TOOL CALL: ${block.name}(${JSON.stringify(block.input).substring(0, 200)})`);

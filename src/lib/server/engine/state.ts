@@ -239,6 +239,9 @@ export function isEntryVisibleTo(
 	partyId: string | undefined,
 	location: string | undefined
 ): boolean {
+	// Hard veto first: the actor never sees their own third-person witness copy,
+	// even though they match its targetLocation/targetParty.
+	if (entry.excludePlayer && entry.excludePlayer === playerId) return false;
 	if (!entry.targetPlayer && !entry.targetParty && !entry.targetLocation) return true;
 	if (entry.targetPlayer && entry.targetPlayer === playerId) return true;
 	if (entry.targetParty && partyId && entry.targetParty === partyId) return true;
