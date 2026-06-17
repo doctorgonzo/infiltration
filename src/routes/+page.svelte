@@ -1042,6 +1042,7 @@
 			case 'system': return 'entry-system';
 			case 'dialogue': return 'entry-dialogue';
 			case 'roll': return 'entry-roll';
+			case 'ooc': return 'entry-ooc';
 			default: return '';
 		}
 	}
@@ -4284,6 +4285,17 @@
 	.entry-roll {
 		color: var(--cyan-dim);
 		font-size: 0.85rem;
+	}
+
+	/* Out-of-character: meta chatter between player and Director, never fiction. */
+	.entry-ooc {
+		color: var(--purple);
+		font-style: italic;
+		opacity: 0.9;
+	}
+
+	.entry-ooc .entry-actor {
+		color: var(--purple-dim);
 	}
 
 	.entry-roll-info {

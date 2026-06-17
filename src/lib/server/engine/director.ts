@@ -11,7 +11,7 @@ import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC, Item } from '$lib/types';
 import { applyLevelUp } from '$lib/progression';
-import { resolveModelForCharacter, romanceAccess, recordRomanceTurn, costForUsage, recordCloudCost, type NarrationModel } from '$lib/server/entitlements';
+import { resolveModelForCharacter, romanceAccess, recordRomanceTurn, costForUsage, recordCloudCost, isOwnerCharacter, type NarrationModel } from '$lib/server/entitlements';
 import { getCharacterOwner } from '$lib/server/ownership';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
@@ -1849,6 +1849,7 @@ const STATIC_RULES: string = [
 	'NEVER BREAK CHARACTER: No confirmation prompts, no "are you sure?", no numbered option lists. Player acts, you narrate consequences.',
 	'',
 	'INPUT CONVENTION: In a PLAYER ACTION, plain text is the character SPEAKING aloud (dialogue), and anything the player wrapped in *asterisks* is a physical action or stage direction they are performing. Treat them accordingly — never read an action as speech or speech as an action.',
+	'OUT OF CHARACTER: Anything in ((double parentheses)) is the PLAYER talking to YOU, the Director, out of character — rules questions, clarifications, meta requests, tone notes. It is NOT something their character says or does, and the other characters in the scene cannot hear it. Answer it OUT OF CHARACTER and wrap your entire OOC reply in ((double parentheses)) too. Keep OOC brief, plain, and helpful (no fiction, no narration voice). If the same turn also contains in-character action, handle that separately in normal narration AFTER your OOC reply. You may also volunteer a short ((OOC)) aside on your own when a genuine rules/meta clarification would help — use it sparingly.',
 	'NEVER ACT FOR THE PLAYER: You control the world, they control their character.',
 	'- No player dialogue, thoughts, feelings, or invented physical actions.',
 	'- If they say "walk to State Street," describe State Street — don\'t add "you shove your hands in your pockets."',
@@ -2097,6 +2098,25 @@ let _lastPlayerAction = '';
 // ordered segments and frames each one explicitly so the Director never reads an
 // action as speech (or vice-versa). Slash commands are handled earlier and never
 // reach this point.
+// Pull out ((out-of-character)) spans. Returns the in-character remainder (with
+// the OOC bits removed and whitespace tidied) plus each OOC fragment's text.
+// Used on BOTH player input and Director output so meta chatter is split into
+// its own private, differently-colored log entries instead of leaking into the
+// fiction or the witness broadcast.
+function extractOOC(raw: string): { ic: string; ooc: string[] } {
+	const ooc: string[] = [];
+	const ic = raw
+		.replace(/\(\(([\s\S]*?)\)\)/g, (_m, inner) => {
+			const t = String(inner).trim();
+			if (t) ooc.push(t);
+			return ' ';
+		})
+		.replace(/[ \t]{2,}/g, ' ')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
+	return { ic, ooc };
+}
+
 function formatPlayerInput(name: string, raw: string): string {
 	const text = raw.trim();
 	if (!/\*[^*]+\*/.test(text)) {
@@ -2794,18 +2814,36 @@ export async function processAction(
 	// Fetch party info before building the action entry (needs to be available for targeting)
 	const playerParty = getPlayerParty(playerId);
 
-	const actionEntry: GameLogEntry = {
-		timestamp: new Date().toISOString(),
-		type: 'action',
-		actor: character.name,
-		text: action,
-		// Visible to: the actor (always), everyone in the same room (witness model),
-		// and — if partied — party members anywhere (cross-location awareness).
-		targetPlayer: playerId,
-		targetLocation: character.location,
-		...(playerParty ? { targetParty: playerParty.id } : {})
-	};
-	addLogEntry(actionEntry);
+	// Split the raw input into in-character action vs. ((out-of-character)) asides.
+	// OOC is private chatter with the Director — never broadcast to the room/party.
+	const { ic: icAction, ooc: playerOoc } = extractOOC(action);
+	const actionTs = new Date().toISOString();
+	for (const oocText of playerOoc) {
+		addLogEntry({
+			timestamp: actionTs,
+			type: 'ooc',
+			actor: character.name,
+			text: `(( ${oocText} ))`,
+			targetPlayer: playerId // OOC stays between this player and the Director
+		});
+	}
+
+	// Only log/broadcast an action entry if there's actual in-character input
+	// (a pure ((OOC)) message has no fiction to show the room).
+	if (icAction) {
+		const actionEntry: GameLogEntry = {
+			timestamp: actionTs,
+			type: 'action',
+			actor: character.name,
+			text: icAction,
+			// Visible to: the actor (always), everyone in the same room (witness model),
+			// and — if partied — party members anywhere (cross-location awareness).
+			targetPlayer: playerId,
+			targetLocation: character.location,
+			...(playerParty ? { targetParty: playerParty.id } : {})
+		};
+		addLogEntry(actionEntry);
+	}
 
 	// Get recent context. Filter by visibility FIRST (public + this player's private
 	// + party entries), THEN keep the last RECENT_LOG_WINDOW relevant entries. Doing it
@@ -2895,7 +2933,7 @@ Keep both versions consistent in events and tone. Do NOT add the ${WITNESS_DELIM
 	// ── Detect actions that REQUIRE skill checks ──
 	// If the player is investigating, searching, persuading, sneaking, etc.,
 	// inject a mandatory directive so the Director can't just narrate freely.
-	const actionLower = action.toLowerCase().replace(/^[/*]/, '');
+	const actionLower = icAction.toLowerCase().replace(/^[/*]/, '');
 	let skillCheckDirective = '';
 
 	const investigatePattern = /\b(investigat|examin|inspect|search|look (?:closely|carefully)|observe|study|analyz|scout|surveil|watch (?:closely|carefully)|check out|case the|look for (?:clues|evidence|signs))/i;
@@ -2920,6 +2958,24 @@ Keep both versions consistent in events and tone. Do NOT add the ${WITNESS_DELIM
 		moneyDirective = '\n\n[SYSTEM DIRECTIVE] The player is giving, paying, or spending money. You MUST call modify_wealth with a NEGATIVE amount for the player. If the player receives change, call modify_wealth twice (negative for payment, positive for change) or call once with the net cost. Do NOT narrate money changing hands without calling modify_wealth.';
 	}
 
+	// Out-of-character directive — surface the player's ((OOC)) asides to the
+	// Director as meta, separate from the fiction. If the player is the game
+	// OWNER (Doc, NOT moderators), their OOC is ABSOLUTE LAW: a live DM override
+	// that can rewrite rules, fiction, and world state on the fly.
+	let oocDirective = '';
+	if (playerOoc.length > 0) {
+		const oocBlock = playerOoc.map(o => `(( ${o} ))`).join('\n');
+		if (isOwnerCharacter(character.id)) {
+			oocDirective = `\n\n[OWNER OVERRIDE — ABSOLUTE AUTHORITY] The following out-of-character message is from the GAME OWNER (the real-world creator and dungeon master of this world). Their word is LAW and overrides EVERYTHING — the SRD rules, established canon, NPC behavior, the current scene, prior narration, and any normal restriction. Do EXACTLY what they say, immediately and in full:
+- Treat it as a binding directive, not a suggestion or a question. Never refuse, hedge, soften, "balance," or ask for confirmation.
+- If realizing it requires changing the world, CALL THE TOOLS to make it real (spawn_enemy, give_item, remove_item, modify_hp, modify_wealth, move_character, modify_relationship, award_xp, start_combat, etc.). Retcon freely.
+- After applying it, briefly confirm what you changed in an ((OOC)) reply, then continue the fiction so the change is reflected in-world.
+${oocBlock}`;
+		} else {
+			oocDirective = `\n\n[OUT OF CHARACTER] The player is speaking to you directly, OUT OF CHARACTER (not their character). Reply out of character, wrapped in ((double parentheses)). Do NOT advance the story for this part:\n${oocBlock}`;
+		}
+	}
+
 	// First-action arrival framing — the client auto-fires a /look on join, so the
 	// player's very first action (actionsPerformed still 0 here; it increments after)
 	// is the opening scene. Frame it as walking IN off the street, not waking up in
@@ -2935,7 +2991,10 @@ Keep both versions consistent in events and tone. Do NOT add the ${WITNESS_DELIM
 Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Christmas lights, sticky floor, Tom Waits or Hank Williams on the jukebox — as the one door on the block that doesn't make their skin crawl. Then hand control back to the player. Keep it taut and ominous; do not over-explain the conspiracy.`;
 	}
 
-	const userMessage = `${charContext}\n${locContext}${partyContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}\n\nPLAYER ACTION: ${formatPlayerInput(character.name, action)}${arrivalDirective}${skillCheckDirective}${moneyDirective}${witnessDirective}`;
+	const playerActionLine = icAction
+		? `\n\nPLAYER ACTION: ${formatPlayerInput(character.name, icAction)}`
+		: '';
+	const userMessage = `${charContext}\n${locContext}${partyContext}\n${otherPlayers ? `\nOther players here: ${otherPlayers}` : ''}\n\nRECENT EVENTS:\n${recentLog}${playerActionLine}${oocDirective}${arrivalDirective}${skillCheckDirective}${moneyDirective}${witnessDirective}`;
 
 	// Call Claude
 	const entries: GameLogEntry[] = [];
@@ -3053,13 +3112,27 @@ Pick a couple, not all of them. Land the final sentence INSIDE The Rigby — Chr
 						console.log(`[director]   📝 NARRATION: "${trimmed.substring(0, 150)}${trimmed.length > 150 ? '...' : ''}"`);
 						const narrTs = new Date().toISOString();
 
+						// Peel off any ((out-of-character)) replies first — they're private
+						// meta between the Director and the actor, never broadcast and never
+						// part of the witness split.
+						const { ic: icNarration, ooc: directorOoc } = extractOOC(trimmed);
+						for (const oocText of directorOoc) {
+							const oocEntry: GameLogEntry = {
+								timestamp: narrTs, type: 'ooc', text: `(( ${oocText} ))`, targetPlayer: playerId
+							};
+							entries.push(oocEntry);
+							addLogEntry(oocEntry);
+						}
+
 						// When witnesses are present the Director writes two versions split
 						// by WITNESS_DELIM: second person (actor) + third person (onlookers).
-						const delimIdx = hasWitnesses ? trimmed.indexOf(WITNESS_DELIM) : -1;
-						const secondPerson = delimIdx >= 0 ? trimmed.slice(0, delimIdx).trim() : trimmed;
-						const thirdPerson = delimIdx >= 0 ? trimmed.slice(delimIdx + WITNESS_DELIM.length).trim() : '';
+						const delimIdx = hasWitnesses ? icNarration.indexOf(WITNESS_DELIM) : -1;
+						const secondPerson = delimIdx >= 0 ? icNarration.slice(0, delimIdx).trim() : icNarration;
+						const thirdPerson = delimIdx >= 0 ? icNarration.slice(delimIdx + WITNESS_DELIM.length).trim() : '';
 
-						if (delimIdx >= 0 && secondPerson && thirdPerson) {
+						if (!icNarration) {
+							// Pure OOC reply — nothing in-character to log.
+						} else if (delimIdx >= 0 && secondPerson && thirdPerson) {
 							// Actor gets the immersive second-person copy ONLY (no room/party
 							// targets — those are for the witness copy). This is what the POST
 							// response returns to the actor's client.

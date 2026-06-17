@@ -270,7 +270,7 @@ export interface GameOverState {
 
 export interface GameLogEntry {
 	timestamp: string;
-	type: 'narration' | 'action' | 'combat' | 'system' | 'dialogue' | 'roll';
+	type: 'narration' | 'action' | 'combat' | 'system' | 'dialogue' | 'roll' | 'ooc';
 	actor?: string;           // who triggered this
 	// Visibility targets are OR-combined: an entry with no targets is public;
 	// otherwise a viewer sees it if ANY set target matches them.

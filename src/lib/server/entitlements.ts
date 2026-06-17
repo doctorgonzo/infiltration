@@ -141,6 +141,14 @@ export function resolveModelForCharacter(characterId: string): NarrationModel {
 	return resolveModelForUser(getCharacterOwner(characterId));
 }
 
+// True only for the single game OWNER (Doc) — NOT moderators. Gates the OOC
+// "owner override" so only Doc can rewrite the game on the fly via ((...)).
+export function isOwnerCharacter(characterId: string): boolean {
+	const userId = getCharacterOwner(characterId);
+	if (!userId) return false;
+	return getUserRow(userId)?.role === 'owner';
+}
+
 // ── Action metering ────────────────────────────────────────
 export type Allowance = {
 	allowed: boolean;
