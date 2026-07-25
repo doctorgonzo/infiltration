@@ -2,9 +2,9 @@
 // ADMIN / GRANT — owner-only role management.
 // POST { email, role: 'moderator' | 'user' } → promote/demote.
 // GET → list every elevated account (owner + moderators).
-// Moderators get free uncapped play (Opus); they do NOT get the
-// /cheat menu — that needs the ADMIN_SECRET, or the owner role,
-// which auto-sets the character.isAdmin flag.
+// Moderators get free uncapped play (Opus) AND the /admin + /cheat
+// commands, which auto-set the character.isAdmin flag for any
+// elevated account. Granting moderator hands out cheat powers.
 // ═══════════════════════════════════════════════════════════
 
 import { json } from '@sveltejs/kit';

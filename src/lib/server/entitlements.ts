@@ -100,12 +100,11 @@ function isThrottleable(row: UserRow | null): boolean {
 	return TIERS[tierFor(row)].priceUsd === 0; // free tier
 }
 
-// Owner (Doc) and moderators (comped friends) both play free + uncapped. The
-// owner also gets the /cheat menu unconditionally (see ensureOwnerAdmin);
-// moderators do NOT — for them cheats stay behind the character.isAdmin flag
-// earned with the ADMIN_SECRET. They differ on model too: owner narrates on
-// Opus, moderators on Sonnet medium — great quality without comping Opus to a
-// whole friend group.
+// Owner (Doc) and moderators (comped friends) both play free + uncapped, and
+// both get the /admin + /cheat commands without the ADMIN_SECRET (see
+// ensureCheatAccess). They differ on model — owner narrates on Opus,
+// moderators on Sonnet medium — and on the OOC owner override, which stays
+// owner-only (see isOwnerCharacter).
 function isElevated(role: string): boolean {
 	return role === 'owner' || role === 'moderator';
 }
@@ -151,14 +150,22 @@ export function isOwnerCharacter(characterId: string): boolean {
 	return getUserRow(userId)?.role === 'owner';
 }
 
-// The owner never has to type the ADMIN_SECRET: any character they own is
-// auto-flagged isAdmin on load and on every turn. Stamping the persisted flag
-// (rather than checking the role at each gate) means the client menu, which
-// keys off character.isAdmin, lights up too. Returns true if it changed
-// anything, so the caller knows to saveState().
-export function ensureOwnerAdmin(character: { id: string; isAdmin?: boolean }): boolean {
+// True for the owner AND moderators — the accounts trusted with cheats.
+export function isElevatedCharacter(characterId: string): boolean {
+	const userId = getCharacterOwner(characterId);
+	if (!userId) return false;
+	const row = getUserRow(userId);
+	return row ? isElevated(row.role) : false;
+}
+
+// Elevated accounts never have to type the ADMIN_SECRET: any character they
+// own is auto-flagged isAdmin on load and on every turn. Stamping the
+// persisted flag (rather than checking the role at each gate) means the client
+// menu, which keys off character.isAdmin, lights up too. Returns true if it
+// changed anything, so the caller knows to saveState().
+export function ensureCheatAccess(character: { id: string; isAdmin?: boolean }): boolean {
 	if (character.isAdmin) return false;
-	if (!isOwnerCharacter(character.id)) return false;
+	if (!isElevatedCharacter(character.id)) return false;
 	character.isAdmin = true;
 	return true;
 }

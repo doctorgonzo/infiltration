@@ -11,7 +11,7 @@ import * as dice from './dice';
 import { ITEMS, ENCOUNTER_TABLES, NPC_CONNECTIONS, NIGHT_ENCOUNTERS, DRUNK_ENCOUNTERS, rollLootDrop, QUEST_NEEDLE, FINALE_QUEST, FINALE_PREREQ_QUESTS, FINALE_REQUIRED_ITEM, scaleBreachGuardian } from '$lib/server/world/madison';
 import type { GameLogEntry, Character, GameState, EncounterEntry, NPC, Item } from '$lib/types';
 import { applyLevelUp } from '$lib/progression';
-import { resolveModelForCharacter, romanceAccess, recordRomanceTurn, costForUsage, recordCloudCost, isOwnerCharacter, ensureOwnerAdmin, type NarrationModel } from '$lib/server/entitlements';
+import { resolveModelForCharacter, romanceAccess, recordRomanceTurn, costForUsage, recordCloudCost, isOwnerCharacter, isElevatedCharacter, ensureCheatAccess, type NarrationModel } from '$lib/server/entitlements';
 import { getCharacterOwner } from '$lib/server/ownership';
 import { env } from '$env/dynamic/private';
 import { readFileSync } from 'fs';
@@ -2212,15 +2212,16 @@ export async function processAction(
 	decayInebriation(character);
 
 
-	// ── Owner always has cheat access — no secret required ──
-	if (ensureOwnerAdmin(character)) saveState();
+	// ── Owner + moderators always have cheat access — no secret required ──
+	if (ensureCheatAccess(character)) saveState();
 
 	// ── /admin — secret-gated unlock + god mode toggle ──
 	// `/admin <secret>` unlocks the cheat menu (sets isAdmin, persisted on the
 	// character). Bare `/admin` toggles god mode but ONLY for an unlocked admin.
-	// `/admin lock` revokes — except for the owner, who is re-granted above on
-	// the next turn regardless. The secret lives in the ADMIN_SECRET env var and
-	// never reaches the client, so IP/device changes don't lock you out.
+	// `/admin lock` revokes — except for elevated accounts, who are re-granted
+	// above on the next turn regardless. The secret lives in the ADMIN_SECRET
+	// env var and never reaches the client, so IP/device changes don't lock you
+	// out.
 	const adminMatch = trimmedAction.match(/^\/admin(?:\s+([\s\S]+))?$/i);
 	if (adminMatch) {
 		const arg = (adminMatch[1] ?? '').trim();
@@ -2250,9 +2251,9 @@ export async function processAction(
 			return sysMsg('⛔ Access denied.');
 		}
 
-		// /admin lock — revoke admin (and drop god mode if on). The owner can't
-		// lock themselves out — the flag comes back next turn — so for them this
-		// only turns god mode off, and says so rather than claiming a lock.
+		// /admin lock — revoke admin (and drop god mode if on). Elevated accounts
+		// can't lock themselves out — the flag comes back next turn — so for them
+		// this only turns god mode off, and says so rather than claiming a lock.
 		if (arg.toLowerCase() === 'lock') {
 			if (character.godMode) {
 				character.hp = Math.min(character.hp, character.originalMaxHp ?? 10);
@@ -2260,9 +2261,9 @@ export async function processAction(
 				character.godMode = false;
 				delete character.originalMaxHp;
 			}
-			if (isOwnerCharacter(character.id)) {
+			if (isElevatedCharacter(character.id)) {
 				saveState();
-				return sysMsg('⚡ God mode off. You are the owner — the cheat menu stays unlocked.');
+				return sysMsg('⚡ God mode off. Your account keeps the cheat menu unlocked.');
 			}
 			character.isAdmin = false;
 			saveState();
