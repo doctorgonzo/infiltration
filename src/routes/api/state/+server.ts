@@ -8,6 +8,7 @@ import type { RequestHandler } from './$types';
 import { getState, getCharacter, getActivePlayerCount, touchCharacter, decayInebriation, saveState } from '$lib/server/engine/state';
 import { syncAdvancement } from '$lib/progression';
 import { userOwnsCharacter } from '$lib/server/ownership';
+import { ensureOwnerAdmin } from '$lib/server/entitlements';
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	const playerId = url.searchParams.get('playerId');
@@ -30,6 +31,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		// (or who leveled via the old auto-only path) get their owed feats/ability
 		// points/skill ranks computed here on load. Idempotent.
 		if (syncAdvancement(character)) saveState();
+		// The owner's cheat menu needs no ADMIN_SECRET — flag it here so the
+		// client lists the commands before they've taken a turn.
+		if (ensureOwnerAdmin(character)) saveState();
 	}
 
 	// Public location info (only discovered locations)

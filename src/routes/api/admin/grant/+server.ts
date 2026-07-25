@@ -3,7 +3,8 @@
 // POST { email, role: 'moderator' | 'user' } → promote/demote.
 // GET → list every elevated account (owner + moderators).
 // Moderators get free uncapped play (Opus); they do NOT get the
-// /cheat menu (that stays on the character.isAdmin flag).
+// /cheat menu — that needs the ADMIN_SECRET, or the owner role,
+// which auto-sets the character.isAdmin flag.
 // ═══════════════════════════════════════════════════════════
 
 import { json } from '@sveltejs/kit';

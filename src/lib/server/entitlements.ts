@@ -100,10 +100,12 @@ function isThrottleable(row: UserRow | null): boolean {
 	return TIERS[tierFor(row)].priceUsd === 0; // free tier
 }
 
-// Owner (Doc) and moderators (comped friends) both play free + uncapped, and
-// neither gets the /cheat menu (that stays on the separate character.isAdmin
-// flag). They differ only on model: owner narrates on Opus, moderators on
-// Sonnet medium — great quality without comping Opus to a whole friend group.
+// Owner (Doc) and moderators (comped friends) both play free + uncapped. The
+// owner also gets the /cheat menu unconditionally (see ensureOwnerAdmin);
+// moderators do NOT — for them cheats stay behind the character.isAdmin flag
+// earned with the ADMIN_SECRET. They differ on model too: owner narrates on
+// Opus, moderators on Sonnet medium — great quality without comping Opus to a
+// whole friend group.
 function isElevated(role: string): boolean {
 	return role === 'owner' || role === 'moderator';
 }
@@ -147,6 +149,18 @@ export function isOwnerCharacter(characterId: string): boolean {
 	const userId = getCharacterOwner(characterId);
 	if (!userId) return false;
 	return getUserRow(userId)?.role === 'owner';
+}
+
+// The owner never has to type the ADMIN_SECRET: any character they own is
+// auto-flagged isAdmin on load and on every turn. Stamping the persisted flag
+// (rather than checking the role at each gate) means the client menu, which
+// keys off character.isAdmin, lights up too. Returns true if it changed
+// anything, so the caller knows to saveState().
+export function ensureOwnerAdmin(character: { id: string; isAdmin?: boolean }): boolean {
+	if (character.isAdmin) return false;
+	if (!isOwnerCharacter(character.id)) return false;
+	character.isAdmin = true;
+	return true;
 }
 
 // ── Action metering ────────────────────────────────────────
