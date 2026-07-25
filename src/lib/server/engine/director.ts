@@ -212,7 +212,9 @@ async function callOAICompatibleDirector(
 }
 
 function callLocalDirector(req: DirectorRequest): Promise<NormalizedResponse> {
-	return callOAICompatibleDirector(getOllamaUrl(), {}, getLocalDirectorModel(), req);
+	// Same endpoint as the romance model, so it needs the same proxy key when
+	// OLLAMA_URL points through the tunnel.
+	return callOAICompatibleDirector(getOllamaUrl(), ollamaAuthHeaders(), getLocalDirectorModel(), req);
 }
 
 function callAgentRouterDirector(req: DirectorRequest): Promise<NormalizedResponse> {
@@ -3387,10 +3389,19 @@ function getOllamaUrl(): string {
 	return envVar('OLLAMA_URL') || 'http://127.0.0.1:11434/v1/chat/completions';
 }
 
+// When the tunnel is up, OLLAMA_URL points at ollama-proxy.mjs rather than at
+// Ollama itself, and the proxy 401s anything without this header. Empty when
+// talking to a local Ollama direct — the header is simply absent then.
+function ollamaAuthHeaders(): Record<string, string> {
+	const key = envVar('ROMANCE_PROXY_KEY').trim();
+	return key ? { 'X-Romance-Key': key } : {};
+}
+
 async function isOllamaReachable(timeoutMs = 3000): Promise<boolean> {
 	try {
 		const probe = await fetch(getOllamaUrl().replace('/v1/chat/completions', '/v1/models'), {
 			method: 'GET',
+			headers: ollamaAuthHeaders(),
 			signal: AbortSignal.timeout(timeoutMs)
 		});
 		return probe.ok;
@@ -3518,7 +3529,7 @@ async function processRomanceAction(
 	try {
 		const response = await fetch(getOllamaUrl(), {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', ...ollamaAuthHeaders() },
 			body: JSON.stringify({
 				model: ROMANCE_MODEL,
 				messages: [
